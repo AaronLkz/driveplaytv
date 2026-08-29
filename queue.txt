@@ -1,0 +1,11 @@
+# ====================================================================
+# COLA DE DESCARGAS - RAVEDOWN 3.0
+# ====================================================================
+# Pega aquí los enlaces de las series / temporadas que deseas descargar.
+# Puedes agregar nuevos enlaces en cualquier momento mientras el script esté corriendo.
+# El script procesará cada enlace en orden, descargará en la máxima calidad (720p),
+# creará las carpetas en Google Drive y subirá los episodios con rclone.
+#
+# Ejemplos:
+# https://es.cuevana4br.com/es/detail/drama/FHlVhWt6O4KFZJnoMQejq-Rent-a-Girlfriend
+# https://es.cuevana4br.com/es/detail/drama/9ByZz4ZV1iyQxBL8bVtjQ-Rent-a-Girlfriend-2nd-Season

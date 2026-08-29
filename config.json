@@ -1,0 +1,19 @@
+{
+  "rclone_remote": "gdrive:Series",
+  "rclone_enabled": true,
+  "delete_after_upload": true,
+  "upload_per_episode": true,
+  "preferred_quality": "720p",
+  "concurrent_fragments": 5,
+  "download_dir": "./downloads",
+  "queue_file": "queue.txt",
+  "ytdlp_path": "yt-dlp",
+  "rclone_path": "rclone",
+  "watch_interval_seconds": 5,
+  "rclone_flags": [
+    "--drive-chunk-size=64M",
+    "--transfers=4",
+    "--fast-list",
+    "-P"
+  ]
+}
