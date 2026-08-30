@@ -3,6 +3,8 @@
   "rclone_enabled": true,
   "delete_after_upload": true,
   "upload_per_episode": true,
+  "upload_cooldown_seconds": 3,
+  "upload_timeout_minutes": 10,
   "preferred_quality": "720p",
   "concurrent_fragments": 5,
   "download_dir": "./downloads",
@@ -11,8 +13,17 @@
   "rclone_path": "rclone",
   "watch_interval_seconds": 5,
   "rclone_flags": [
-    "--drive-chunk-size=64M",
-    "--transfers=4",
+    "--drive-chunk-size=128M",
+    "--drive-upload-cutoff=1000M",
+    "--drive-pacer-min-sleep=200ms",
+    "--drive-pacer-burst=5",
+    "--tpslimit=8",
+    "--no-traverse",
+    "--timeout=8m",
+    "--contimeout=30s",
+    "--retries=3",
+    "--low-level-retries=10",
+    "--transfers=2",
     "--fast-list",
     "-P"
   ]

@@ -255,12 +255,21 @@ except Exception as e:
         if [ $? -eq 0 ] && [ -f "$LOCAL_FILE" ]; then
             echo -e "  ${VERDE}✅ Descarga completada ($FILENAME)${NC}"
             
-            # Subir a Google Drive con Rclone
+            # Subir a Google Drive con Rclone (Parámetros Anti-Rate Limit)
             if [ "$ENABLE_RCLONE" = true ]; then
                 echo -e "  ☁️  ${CYAN}Subiendo a Google Drive ($REMOTE_PATH)...${NC}"
                 rclone copyto "$LOCAL_FILE" "$RCLONE_REMOTE/$REMOTE_PATH" \
-                    --drive-chunk-size=64M \
-                    --transfers=4 \
+                    --drive-chunk-size=128M \
+                    --drive-upload-cutoff=1000M \
+                    --drive-pacer-min-sleep=200ms \
+                    --drive-pacer-burst=5 \
+                    --tpslimit=8 \
+                    --no-traverse \
+                    --timeout=8m \
+                    --contimeout=30s \
+                    --retries=3 \
+                    --low-level-retries=10 \
+                    --transfers=2 \
                     --fast-list \
                     -P
                 
@@ -270,8 +279,11 @@ except Exception as e:
                         rm -f "$LOCAL_FILE"
                         echo -e "  🗑️  ${AMARILLO}Archivo local eliminado para ahorrar espacio.${NC}"
                     fi
+                    # Pausa de enfriamiento para no saturar la API de Google Drive
+                    sleep 3
                 else
                     echo -e "  ${ROJO}❌ Error al subir a Google Drive con rclone.${NC}"
+                    sleep 10
                 fi
             fi
         else

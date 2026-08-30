@@ -498,10 +498,33 @@ class Downloader:
 # =====================================================================
 
 class RcloneUploader:
-    def __init__(self, remote: str, rclone_path: str = "rclone", flags: Optional[List[str]] = None):
+    def __init__(
+        self,
+        remote: str,
+        rclone_path: str = "rclone",
+        flags: Optional[List[str]] = None,
+        timeout_minutes: int = 10,
+        cooldown_seconds: int = 3
+    ):
         self.remote = remote.rstrip("/")
         self.rclone_cmd = self.detect_rclone(rclone_path)
-        self.flags = flags or ["--drive-chunk-size=64M", "--transfers=4", "--fast-list", "-P"]
+        self.timeout_seconds = max(60, timeout_minutes * 60)
+        self.cooldown_seconds = cooldown_seconds
+        self.flags = flags or [
+            "--drive-chunk-size=128M",
+            "--drive-upload-cutoff=1000M",
+            "--drive-pacer-min-sleep=200ms",
+            "--drive-pacer-burst=5",
+            "--tpslimit=8",
+            "--no-traverse",
+            "--timeout=8m",
+            "--contimeout=30s",
+            "--retries=3",
+            "--low-level-retries=10",
+            "--transfers=2",
+            "--fast-list",
+            "-P"
+        ]
 
     def detect_rclone(self, custom_path: str) -> str:
         candidates = [
@@ -521,18 +544,21 @@ class RcloneUploader:
         remote_root = self.remote.split(":")[0] + ":"
         cmd = [self.rclone_cmd, "lsd", remote_root]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
             if res.returncode == 0:
                 log_success(f"Conexión con rclone exitosa hacia '{self.remote}'")
                 return True
             else:
-                log_error(f"Error al conectar con rclone: {res.stderr.strip()}")
+                err = res.stderr.strip()
+                log_error(f"Error al conectar con rclone: {err}")
+                if "rateLimitExceeded" in err or "userRateLimitExceeded" in err or "403" in err:
+                    log_warn("⚠️ Detectado Rate Limit en Google Drive API. Considera usar un Client ID propio.")
                 return False
         except Exception as e:
             log_error(f"No se pudo ejecutar rclone: {e}")
             return False
 
-    def upload_file(self, local_file: str, remote_dest_path: str) -> bool:
+    def upload_file(self, local_file: str, remote_dest_path: str, max_retries: int = 3) -> bool:
         """
         Sube un archivo individual a Google Drive manteniendo la jerarquía.
         remote_dest_path: ej. 'Rent-a-Girlfriend/Season 01/Rent-a-Girlfriend - S01E01.mp4'
@@ -541,38 +567,74 @@ class RcloneUploader:
             log_error(f"El archivo local '{local_file}' no existe.")
             return False
 
-        # Construir destino completo con remote
         full_dest = f"{self.remote}/{remote_dest_path}"
         cmd = [self.rclone_cmd, "copyto", local_file, full_dest] + self.flags
 
-        log_step(f"Subiendo a Google Drive: {Colors.CYAN}{remote_dest_path}{Colors.RESET}")
-        try:
-            res = subprocess.run(cmd, text=True)
-            if res.returncode == 0:
-                log_success(f"Subida completada en Drive: {remote_dest_path}")
-                return True
-            else:
-                log_error(f"Falló la subida de rclone (Código {res.returncode})")
-                return False
-        except Exception as e:
-            log_error(f"Excepción en subida rclone: {e}")
-            return False
+        for attempt in range(1, max_retries + 1):
+            log_step(f"Subiendo a Google Drive (Intento {attempt}/{max_retries}): {Colors.CYAN}{remote_dest_path}{Colors.RESET}")
+            try:
+                # Ejecutar con timeout para evitar que rclone se quede colgado indefinidamente al 100%
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout_seconds)
+                
+                if res.returncode == 0:
+                    log_success(f"Subida completada en Drive: {remote_dest_path}")
+                    if self.cooldown_seconds > 0:
+                        time.sleep(self.cooldown_seconds)
+                    return True
+                else:
+                    stderr = res.stderr or ""
+                    log_error(f"Falló la subida de rclone (Código {res.returncode}): {stderr.strip()[:200]}")
+                    
+                    # Diagnóstico de errores comunes de Google Drive
+                    if "userRateLimitExceeded" in stderr or "rateLimitExceeded" in stderr or "429" in stderr:
+                        wait_time = 30 * attempt
+                        log_warn(f"⏳ Google Drive Rate Limit detectado. Pausando {wait_time}s antes de reintentar...")
+                        time.sleep(wait_time)
+                    elif "storageQuotaExceeded" in stderr or "upload limit" in stderr.lower():
+                        log_error("🛑 Límite diario de subida de Google Drive alcanzado (750GB/día).")
+                        return False
+                    else:
+                        time.sleep(10)
 
-    def upload_directory(self, local_dir: str, remote_dir: str) -> bool:
+            except subprocess.TimeoutExpired:
+                log_warn(f"⚠️ La subida tardó más de {self.timeout_seconds // 60} minutos y se canceló por timeout (posible bloqueo de API).")
+                time.sleep(15)
+            except Exception as e:
+                log_error(f"Excepción en subida rclone: {e}")
+                time.sleep(10)
+
+        return False
+
+    def upload_directory(self, local_dir: str, remote_dir: str, max_retries: int = 3) -> bool:
         """Sube una carpeta completa a Google Drive."""
         if not os.path.exists(local_dir):
             return False
 
         full_dest = f"{self.remote}/{remote_dir}"
-        cmd = [self.rclone_cmd, "copy", local_dir, full_dest] + self.flags
+        # Remover --no-traverse para directorios
+        dir_flags = [f for f in self.flags if f != "--no-traverse"]
+        cmd = [self.rclone_cmd, "copy", local_dir, full_dest] + dir_flags
 
-        log_step(f"Subiendo carpeta a Google Drive: {Colors.CYAN}{remote_dir}{Colors.RESET}")
-        try:
-            res = subprocess.run(cmd, text=True)
-            return res.returncode == 0
-        except Exception as e:
-            log_error(f"Excepción en subida rclone: {e}")
-            return False
+        for attempt in range(1, max_retries + 1):
+            log_step(f"Subiendo carpeta a Google Drive (Intento {attempt}/{max_retries}): {Colors.CYAN}{remote_dir}{Colors.RESET}")
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout_seconds * 2)
+                if res.returncode == 0:
+                    log_success(f"Carpeta subida exitosamente: {remote_dir}")
+                    if self.cooldown_seconds > 0:
+                        time.sleep(self.cooldown_seconds)
+                    return True
+                else:
+                    log_error(f"Error subiendo directorio: {res.stderr.strip()[:200]}")
+                    time.sleep(15)
+            except subprocess.TimeoutExpired:
+                log_warn("⚠️ Timeout al subir carpeta a Drive.")
+                time.sleep(15)
+            except Exception as e:
+                log_error(f"Excepción en subida rclone: {e}")
+                time.sleep(10)
+
+        return False
 
 
 # =====================================================================
@@ -591,7 +653,9 @@ class RavedownEngine:
         self.uploader = RcloneUploader(
             remote=config.get("rclone_remote", "gdrive:Series"),
             rclone_path=config.get("rclone_path", "rclone"),
-            flags=config.get("rclone_flags")
+            flags=config.get("rclone_flags"),
+            timeout_minutes=config.get("upload_timeout_minutes", 10),
+            cooldown_seconds=config.get("upload_cooldown_seconds", 3)
         )
 
     def process_url(self, url: str, episode_filter: Optional[List[int]] = None) -> bool:

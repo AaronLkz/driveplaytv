@@ -92,6 +92,8 @@ Edita el archivo `config.json` para personalizar el comportamiento:
   "rclone_enabled": true,
   "delete_after_upload": true,
   "upload_per_episode": true,
+  "upload_cooldown_seconds": 3,
+  "upload_timeout_minutes": 10,
   "preferred_quality": "720p",
   "concurrent_fragments": 5,
   "download_dir": "./downloads",
@@ -100,17 +102,48 @@ Edita el archivo `config.json` para personalizar el comportamiento:
   "rclone_path": "rclone",
   "watch_interval_seconds": 5,
   "rclone_flags": [
-    "--drive-chunk-size=64M",
-    "--transfers=4",
+    "--drive-chunk-size=128M",
+    "--drive-upload-cutoff=1000M",
+    "--drive-pacer-min-sleep=200ms",
+    "--drive-pacer-burst=5",
+    "--tpslimit=8",
+    "--no-traverse",
+    "--timeout=8m",
+    "--contimeout=30s",
+    "--retries=3",
+    "--low-level-retries=10",
+    "--transfers=2",
     "--fast-list",
     "-P"
   ]
 }
 ```
 
-*Nota:* Si tu remote en Rclone tiene otro nombre (por ejemplo `midrive`), cambia `"gdrive:Series"` por `"midrive:Series"`.
-
 ---
+
+## ⚡ Solución al Problema de Rate Limits y Bloqueos al Subir Muchos Videos
+
+### ¿Por qué se queda colgado en `200MB / 200MB (100%)` tras muchos videos?
+1. **Client ID Compartido**: Por defecto, Rclone usa un `client_id` público de Google compartido por miles de usuarios. Al hacer muchas peticiones consecutivas (100-150 videos), Google Drive activa el **Rate Limit** (`403 User Rate Limit Exceeded` o `429 Too Many Requests`).
+2. **Commit Final y Checksum**: Al llegar al 100%, Google Drive calcula el hash MD5, indexa el archivo y crea las carpetas en sus servidores. Si la API está saturada, esta confirmación tarda minutos o entra en pausa.
+3. **Traversals Innecesarios**: Sin `--no-traverse`, Rclone consulta toda la carpeta remota antes de cada archivo.
+
+### Soluciones Aplicadas en Ravedown 3.0:
+- **`--drive-chunk-size=128M`**: Sube archivos en solo 1 o 2 bloques en lugar de 4+, reduciendo las llamadas HTTP a la API a la mitad.
+- **`--no-traverse`**: Sube el archivo directo sin escanear carpetas remotas antes.
+- **`--tpslimit=8` y `--drive-pacer-min-sleep=200ms`**: Regula la velocidad de peticiones a la API para evitar que Google active bloqueos.
+- **Timeouts automáticos (10 min)**: Si una subida se bloquea en Google Drive, el script la cancela, espera con backoff exponencial y reintenta limpiamente.
+- **Cooldown entre episodios (3 seg)**: Permite que los buffers de la API se refresquen entre videos.
+
+### 🔑 Recomendación Clave: Crear tu propio Google Client ID (2 minutos)
+Para tener cuota 100% ilimitada y dedicada de la API de Google:
+1. Entra en [Google Cloud Console](https://console.cloud.google.com/).
+2. Crea un proyecto nuevo (ej. `MiDriveRclone`).
+3. Ve a **APIs & Services** > **Library** y activa **Google Drive API**.
+4. Ve a **APIs & Services** > **Credentials** > **Create Credentials** > **OAuth client ID**.
+5. Selecciona **Desktop App**.
+6. Copia tu `Client ID` y `Client Secret`.
+7. Ejecuta `rclone config`, edita tu remote `gdrive` y pega tu `client_id` y `client_secret` propios.
 
 ## 📖 Modo de Uso
 
