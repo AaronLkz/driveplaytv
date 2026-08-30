@@ -197,7 +197,7 @@ python ravedown.py --test-rclone
 
 ---
 
-### Opción F: Uso con Script Bash (`ravedown3.0.sh` en Linux/VPS)
+### Opción F: Uso con Script Bash Cloud (`ravedown3.0.sh` con Rclone / Google Drive)
 
 ```bash
 chmod +x ravedown3.0.sh
@@ -206,15 +206,27 @@ chmod +x ravedown3.0.sh
 
 ---
 
+### Opción G: Uso Local en PC (`ravedown2.5.sh` sin Rclone)
+
+Para descargar directamente a carpetas locales de tu PC con control de calidad y memoria RAM:
+
+```bash
+chmod +x ravedown2.5.sh
+./ravedown2.5.sh
+```
+
+---
+
 ## 📁 Estructura del Proyecto
 
 ```
 driveplaytv/
-├── ravedown.py          # Programa principal con cola, rclone y base de datos
+├── ravedown.py          # Programa principal con cola, rclone y base de datos (Python)
+├── ravedown3.0.sh       # Script universal Bash con subida a Google Drive (Rclone)
+├── ravedown2.5.sh       # Script Bash para descargas locales en PC (selector calidad + control RAM)
+├── ravedown2.1.sh       # Script original (preservado como respaldo)
 ├── config.json          # Archivo de configuración personalizable
 ├── queue.txt            # Archivo de cola de enlaces en vivo
 ├── ravedown.db          # Base de datos SQLite (se genera automáticamente)
-├── ravedown3.0.sh       # Script universal Bash para Linux/VPS
-├── ravedown2.1.sh       # Script original (preservado como respaldo)
 └── README.md            # Documentación completa
 ```
