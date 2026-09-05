@@ -21,6 +21,9 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+export LC_ALL=C.UTF-8
+export LANG=C.UTF-8
+
 UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 echo ""
@@ -34,18 +37,32 @@ echo ""
 # ==============================================================================
 
 detectar_ytdlp() {
-    local NOMBRES=("yt-dlp" "yt-dlp_linux" "yt-dlp_linux_aarch64" "yt-dlp.exe")
+    local ES_WINDOWS=false
+    case "$(uname -s)" in
+        *MINGW*|*MSYS*|*CYGWIN*) ES_WINDOWS=true ;;
+        *) [ "$OS" = "Windows_NT" ] && ES_WINDOWS=true ;;
+    esac
+
+    local NOMBRES=("yt-dlp.exe" "yt-dlp" "yt-dlp_linux" "yt-dlp_linux_aarch64")
+    if [ "$ES_WINDOWS" = true ]; then
+        NOMBRES=("yt-dlp.exe" "yt-dlp")
+    fi
+
     for nombre in "${NOMBRES[@]}"; do
         if command -v "$nombre" &> /dev/null; then
-            echo "$nombre"
-            return 0
+            if "$nombre" --version &> /dev/null; then
+                echo "$nombre"
+                return 0
+            fi
         fi
     done
-    for path in /usr/local/bin /usr/bin ~/.local/bin "$HOME/bin" "$USERPROFILE/bin"; do
+    for path in ~/.local/bin /usr/local/bin /usr/bin "$HOME/bin" "$USERPROFILE/bin"; do
         for nombre in "${NOMBRES[@]}"; do
-            if [ -f "$path/$nombre" ] && [ -x "$path/$nombre" ]; then
-                echo "$path/$nombre"
-                return 0
+            if [ -f "$path/$nombre" ]; then
+                if "$path/$nombre" --version &> /dev/null; then
+                    echo "$path/$nombre"
+                    return 0
+                fi
             fi
         done
     done
@@ -55,39 +72,27 @@ detectar_ytdlp() {
 YTDLP_CMD=$(detectar_ytdlp)
 
 if [ -z "$YTDLP_CMD" ]; then
-    if command -v yt-dlp_linux &> /dev/null; then
-        echo -e "${AMARILLO}⚠️ Detectado yt-dlp_linux, creando enlace simbólico...${NC}"
-        sudo ln -sf $(which yt-dlp_linux) /usr/local/bin/yt-dlp 2>/dev/null
-        if [ $? -eq 0 ]; then
-            YTDLP_CMD="yt-dlp"
-        else
-            mkdir -p ~/.local/bin
-            ln -sf $(which yt-dlp_linux) ~/.local/bin/yt-dlp 2>/dev/null
-            export PATH="$HOME/.local/bin:$PATH"
-            if command -v yt-dlp &> /dev/null; then
-                YTDLP_CMD="yt-dlp"
-            fi
-        fi
-    fi
-fi
+    ES_WIN=false
+    case "$(uname -s)" in
+        *MINGW*|*MSYS*|*CYGWIN*) ES_WIN=true ;;
+        *) [ "$OS" = "Windows_NT" ] && ES_WIN=true ;;
+    esac
 
-if [ -z "$YTDLP_CMD" ]; then
-    echo -e "${AMARILLO}⚠️ yt-dlp no encontrado en PATH, intentando descargar versión oficial...${NC}"
+    echo -e "${AMARILLO}⚠️ yt-dlp no encontrado, descargando versión oficial...${NC}"
     mkdir -p ~/.local/bin
-    curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp 2>/dev/null
-    chmod a+rx ~/.local/bin/yt-dlp 2>/dev/null
+    if [ "$ES_WIN" = true ]; then
+        curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -o ~/.local/bin/yt-dlp.exe 2>/dev/null
+        chmod a+rx ~/.local/bin/yt-dlp.exe 2>/dev/null
+    else
+        curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp 2>/dev/null
+        chmod a+rx ~/.local/bin/yt-dlp 2>/dev/null
+    fi
     export PATH="$HOME/.local/bin:$PATH"
     YTDLP_CMD=$(detectar_ytdlp)
 fi
 
 if [ -z "$YTDLP_CMD" ]; then
-    echo -e "${ROJO}❌ No se encontró yt-dlp instalado${NC}"
-    echo ""
-    echo "   📥 Instalación rápida en Linux / VPS:"
-    echo "   sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp"
-    echo "   sudo chmod a+rx /usr/local/bin/yt-dlp"
-    echo ""
-    read -p "Presiona Enter para salir..."
+    echo -e "${ROJO}❌ No se pudo encontrar ni ejecutar yt-dlp.${NC}"
     exit 1
 fi
 
@@ -368,24 +373,33 @@ for EP in "${LISTA_CAPITULOS[@]}"; do
     EP_URL="${BASE_URL}/${EP}"
     HTML=$(curl -s -L -A "$UA" "$EP_URL" 2>/dev/null)
     
-    # 1. Buscar ID del reproductor en zilla-networks
-    PLAYER_ID=$(echo "$HTML" | grep -oP 'player\.zilla-networks\.com/play/\K[a-f0-9]+' | head -1)
+    # 1. Buscar ID del reproductor en zilla-networks (sed primero por compatibilidad con Git Bash)
+    PLAYER_ID=$(echo "$HTML" | sed -nE 's/.*player\.zilla-networks\.com\/play\/([a-f0-9]+).*/\1/p' | head -1)
     if [ -z "$PLAYER_ID" ]; then
-        PLAYER_ID=$(echo "$HTML" | grep -oP 'zilla-networks\.com/(?:play|m3u8)/\K[a-f0-9]+' | head -1)
+        PLAYER_ID=$(echo "$HTML" | sed -nE 's/.*zilla-networks\.com\/(play|m3u8)\/([a-f0-9]+).*/\2/p' | head -1)
     fi
+    if [ -z "$PLAYER_ID" ]; then
+        PLAYER_ID=$(echo "$HTML" | grep -oP 'player\.zilla-networks\.com/play/\K[a-f0-9]+' 2>/dev/null | head -1)
+    fi
+    
+    PLAYER_ID=$(echo "$PLAYER_ID" | tr -d '\r\n ')
     
     if [ -n "$PLAYER_ID" ]; then
         # URL HLS directa del reproductor
         M3U8_URL="https://player.zilla-networks.com/m3u8/${PLAYER_ID}"
         echo -e " ${VERDE}✅ Encontrado (ID: ${PLAYER_ID:0:12}...)${NC}"
-        echo "$EP|$M3U8_URL" >> "$TEMP_FILE"
+        echo "$EP|$M3U8_URL|$PLAYER_ID" >> "$TEMP_FILE"
     else
         # Fallback si hay enlace m3u8 directo en la página
-        DIRECT_M3U8=$(echo "$HTML" | grep -oP 'https?://[^\s"'\''<>]+\.m3u8[^\s"'\''<>]*' | head -1)
+        DIRECT_M3U8=$(echo "$HTML" | sed -nE 's/.*(https?:\/\/[^"'\''<>]+\.m3u8[^"'\''<>]*).*/\1/p' | head -1)
+        if [ -z "$DIRECT_M3U8" ]; then
+            DIRECT_M3U8=$(echo "$HTML" | grep -oP 'https?://[^\s"'\''<>]+\.m3u8[^\s"'\''<>]*' 2>/dev/null | head -1)
+        fi
+        
         if [ -n "$DIRECT_M3U8" ]; then
-            DIRECT_M3U8=$(echo "$DIRECT_M3U8" | sed 's/\\u0026/\&/g')
+            DIRECT_M3U8=$(echo "$DIRECT_M3U8" | sed 's/\\u0026/\&/g' | tr -d '\r\n ')
             echo -e " ${VERDE}✅ Enlace M3U8 alternativo encontrado${NC}"
-            echo "$EP|$DIRECT_M3U8" >> "$TEMP_FILE"
+            echo "$EP|$DIRECT_M3U8|direct" >> "$TEMP_FILE"
         else
             echo -e " ${ROJO}❌ NO ENCONTRADO${NC}"
             echo "Episodio $EP: No se encontró reproductor HLS" >> "$ERROR_LOG"
@@ -395,15 +409,18 @@ for EP in "${LISTA_CAPITULOS[@]}"; do
     sleep 0.2
 done
 
-ENCONTRADOS=$(grep -c '|https' "$TEMP_FILE" 2>/dev/null || echo 0)
+ENCONTRADOS=$(grep -c '|https' "$TEMP_FILE" 2>/dev/null || true)
+ENCONTRADOS=$(echo "$ENCONTRADOS" | tr -dc '0-9')
+ENCONTRADOS=${ENCONTRADOS:-0}
 FALLIDOS=$((CAPITULOS_A_DESCARGAR - ENCONTRADOS))
+[ $FALLIDOS -lt 0 ] && FALLIDOS=0
 
 echo ""
 echo -e "${CYAN}==========================================${NC}"
 echo -e "${BOLD}📊 RESULTADO DE EXTRACCIÓN${NC}"
 echo -e "${CYAN}==========================================${NC}"
 echo -e "${VERDE}✅ Encontrados: $ENCONTRADOS/$CAPITULOS_A_DESCARGAR${NC}"
-if [ $FALLIDOS -gt 0 ]; then
+if [ "$FALLIDOS" -gt 0 ]; then
     echo -e "${ROJO}❌ Fallidos: $FALLIDOS${NC}"
     cat "$ERROR_LOG"
 fi
@@ -445,22 +462,31 @@ INICIO=$(date +%s)
 
 # Función de descarga individual
 descargar_episodio() {
-    local ep=$1
-    local url=$2
-    local ep_pad=$(printf "%02d" $ep)
+    local ep=$(echo "$1" | tr -d '\r\n ')
+    local url=$(echo "$2" | tr -d '\r\n ')
+    local player_id=$(echo "$3" | tr -d '\r\n ')
+    local ep_pad=$(printf "%02d" "$ep" 2>/dev/null || echo "$ep")
     local archivo_salida="$OUTPUT_DIR/${SERIES_NAME} - Episodio ${ep_pad}.mp4"
 
     echo -e "📥 [Episodio $ep] Descargando..."
 
+    local REF="https://player.zilla-networks.com/play/${player_id}"
+    if [ "$player_id" = "direct" ] || [ -z "$player_id" ]; then
+        REF="https://animeav1.com/"
+    fi
+
     $YTDLP_CMD \
+        -f "$YTDLP_FORMAT" \
         -o "$archivo_salida" \
         --no-playlist \
         --force-overwrites \
         --no-warnings \
         --user-agent "$UA" \
-        --referer "https://player.zilla-networks.com/" \
+        --referer "$REF" \
         --add-header "Origin: https://player.zilla-networks.com" \
-        -f "$YTDLP_FORMAT" \
+        --add-header "Sec-Fetch-Site: same-origin" \
+        --add-header "Sec-Fetch-Mode: cors" \
+        --add-header "Sec-Fetch-Dest: empty" \
         --retries 5 \
         --fragment-retries 5 \
         --concurrent-fragments 4 \
@@ -476,24 +502,37 @@ descargar_episodio() {
 }
 
 export -f descargar_episodio 2>/dev/null
-export OUTPUT_DIR SERIES_NAME UA YTDLP_FORMAT FALLIDOS_FILE YTDLP_CMD
+export OUTPUT_DIR SERIES_NAME UA FALLIDOS_FILE YTDLP_CMD YTDLP_FORMAT
 
 if [ "$MAX_PARALELO" -eq 1 ]; then
     # Modo Secuencial
-    while IFS='|' read -r EP_NUM M3U8_URL; do
-        EP_PAD=$(printf "%02d" $EP_NUM)
+    while IFS='|' read -r EP_NUM M3U8_URL PLAYER_ID; do
+        EP_NUM=$(echo "$EP_NUM" | tr -d '\r\n ')
+        M3U8_URL=$(echo "$M3U8_URL" | tr -d '\r\n ')
+        PLAYER_ID=$(echo "$PLAYER_ID" | tr -d '\r\n ')
+        [ -z "$EP_NUM" ] && continue
+
+        EP_PAD=$(printf "%02d" "$EP_NUM" 2>/dev/null || echo "$EP_NUM")
         echo ""
         echo -e "📥 ${BOLD}Descargando Episodio $EP_NUM...${NC}"
         
+        REF="https://player.zilla-networks.com/play/${PLAYER_ID}"
+        if [ "$PLAYER_ID" = "direct" ] || [ -z "$PLAYER_ID" ]; then
+            REF="https://animeav1.com/"
+        fi
+
         $YTDLP_CMD \
+            -f "$YTDLP_FORMAT" \
             -o "$OUTPUT_DIR/${SERIES_NAME} - Episodio ${EP_PAD}.mp4" \
             --no-playlist \
             --force-overwrites \
             --progress \
             --user-agent "$UA" \
-            --referer "https://player.zilla-networks.com/" \
+            --referer "$REF" \
             --add-header "Origin: https://player.zilla-networks.com" \
-            -f "$YTDLP_FORMAT" \
+            --add-header "Sec-Fetch-Site: same-origin" \
+            --add-header "Sec-Fetch-Mode: cors" \
+            --add-header "Sec-Fetch-Dest: empty" \
             --retries 5 \
             --fragment-retries 5 \
             --concurrent-fragments 4 \
@@ -512,12 +551,17 @@ else
     echo -e "⚡ Descargando $ENCONTRADOS episodios (Máximo $MAX_PARALELO simultáneos para cuidar la RAM)..."
     echo ""
     
-    while IFS='|' read -r EP_NUM M3U8_URL; do
+    while IFS='|' read -r EP_NUM M3U8_URL PLAYER_ID; do
+        EP_NUM=$(echo "$EP_NUM" | tr -d '\r\n ')
+        M3U8_URL=$(echo "$M3U8_URL" | tr -d '\r\n ')
+        PLAYER_ID=$(echo "$PLAYER_ID" | tr -d '\r\n ')
+        [ -z "$EP_NUM" ] && continue
+
         while [ $(jobs -r -p 2>/dev/null | wc -l) -ge $MAX_PARALELO ]; do
             sleep 0.5
         done
         
-        descargar_episodio "$EP_NUM" "$M3U8_URL" &
+        descargar_episodio "$EP_NUM" "$M3U8_URL" "$PLAYER_ID" &
     done < "$TEMP_FILE"
     
     # Esperar a que todos los hilos terminen
@@ -531,7 +575,8 @@ SEGUNDOS=$((TIEMPO % 60))
 
 FALLIDOS_DESC=0
 if [ -f "$FALLIDOS_FILE" ]; then
-    FALLIDOS_DESC=$(wc -l < "$FALLIDOS_FILE" 2>/dev/null || echo 0)
+    FALLIDOS_DESC=$(wc -l < "$FALLIDOS_FILE" 2>/dev/null | tr -dc '0-9')
+    FALLIDOS_DESC=${FALLIDOS_DESC:-0}
     if [ "$FALLIDOS_DESC" -eq 0 ]; then
         rm -f "$FALLIDOS_FILE"
     fi
