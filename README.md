@@ -206,13 +206,24 @@ chmod +x ravedown3.0.sh
 
 ---
 
-### Opción G: Uso Local en PC (`ravedown2.5.sh` sin Rclone)
+### Opción G: Uso Local de Series en PC (`ravedown2.5.sh` sin Rclone)
 
-Para descargar directamente a carpetas locales de tu PC con control de calidad y memoria RAM:
+Para descargar series directamente a carpetas locales de tu PC con control de calidad y memoria RAM:
 
 ```bash
 chmod +x ravedown2.5.sh
 ./ravedown2.5.sh
+```
+
+---
+
+### Opción H: Uso Local de Animes en PC (`animeav1down2.5.sh` para AnimeAV1)
+
+Para descargar animes completos desde **AnimeAV1.com** (stream HLS Zilla-Networks) directamente a tu PC:
+
+```bash
+chmod +x animeav1down2.5.sh
+./animeav1down2.5.sh
 ```
 
 ---
@@ -223,8 +234,10 @@ chmod +x ravedown2.5.sh
 driveplaytv/
 ├── ravedown.py          # Programa principal con cola, rclone y base de datos (Python)
 ├── ravedown3.0.sh       # Script universal Bash con subida a Google Drive (Rclone)
-├── ravedown2.5.sh       # Script Bash para descargas locales en PC (selector calidad + control RAM)
-├── ravedown2.1.sh       # Script original (preservado como respaldo)
+├── ravedown2.5.sh       # Script Bash para series locales en PC (selector calidad + control RAM)
+├── animeav1down2.5.sh   # Script Bash para animes locales en PC desde AnimeAV1 (HLS Zilla)
+├── animeav1down.sh      # Script original de anime (preservado como respaldo)
+├── ravedown2.1.sh       # Script original de series (preservado como respaldo)
 ├── config.json          # Archivo de configuración personalizable
 ├── queue.txt            # Archivo de cola de enlaces en vivo
 ├── ravedown.db          # Base de datos SQLite (se genera automáticamente)
