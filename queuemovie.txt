@@ -1,0 +1,22 @@
+# =====================================================================
+# 🎬 COLA DE PELÍCULAS - RAVEDOWN MOVIE
+# =====================================================================
+# Agrega aquí enlaces o nombres de películas (una por línea).
+# El script procesará cada línea automáticamente.
+#
+# Formatos soportados:
+# 1. Enlace de Cinebel: https://cinebel.cc/movies/super-mario-bros-la-pelicula/
+# 2. Enlace de TMDB:    https://www.themoviedb.org/movie/502356
+# 3. ID de TMDB:        502356  o  tmdb:502356
+# 4. Título directo:    Super Mario Bros
+#
+# Ejemplo:
+# https://cinebel.cc/movies/super-mario-bros-la-pelicula/
+# =====================================================================
+
+# --- Importado desde Sitemap Página 1 (2026-09-07 17:05) ---
+https://cinebel.cc/movies/ice-age-dawn-of-the-dinosaurs/
+https://cinebel.cc/movies/el-hombre-de-acero/
+https://cinebel.cc/movies/ted-2/
+https://cinebel.cc/movies/no-game-no-life-zero/
+https://cinebel.cc/movies/that-time-i-got-reincarnated-as-a-slime-the-movie-scarlet-bond/
