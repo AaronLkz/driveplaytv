@@ -1,0 +1,100 @@
+Aquí tienes el paso a paso exacto para instalar y configurar **Rclone** en tu nuevo VPS. 
+
+Tienes dos formas de configurarlo:
+- **Método 1 (Super Rápido - 1 minuto):** Copiar la configuración que ya tienes en tu otro VPS. *(¡Muy recomendado! Así te evitas tener que volver a hacer el inicio de sesión de Google).*
+- **Método 2 (Desde cero):** Hacer la configuración completa en este VPS.
+
+---
+
+### Paso 2.1: Instalar Rclone en tu nuevo VPS
+
+Ejecuta este comando en la terminal de tu nuevo VPS (descarga e instala la última versión oficial):
+
+```bash
+curl https://rclone.org/install.sh | sudo bash
+```
+
+Para verificar que quedó instalado:
+```bash
+rclone version
+```
+
+---
+
+### Paso 2.2: Conectar tu Google Drive
+
+#### 👉 Método 1: Copiar la configuración de tu otro VPS (El más fácil)
+
+Como ya tienes tu cuenta de 5TB vinculada en el otro VPS, simplemente podemos copiar el archivo `rclone.conf`:
+
+1. **En tu OTRO VPS (donde ya funciona Rclone):**
+   Muestra el contenido de tu configuración ejecutando:
+   ```bash
+   cat ~/.config/rclone/rclone.conf
+   ```
+   *(Verás un bloque de texto que empieza con `[gdrive]` con tu token y configuración. Cópialo).*
+
+2. **En tu NUEVO VPS:**
+   Crea la carpeta de configuración y abre el archivo:
+   ```bash
+   mkdir -p ~/.config/rclone
+   nano ~/.config/rclone/rclone.conf
+   ```
+   - Pega el texto que copiaste.
+   - Guarda con `Ctrl + O`, presiona `Enter` y sal con `Ctrl + X`.
+
+3. **¡Listo!** Ya tienes Rclone 100% autenticado en el nuevo VPS sin tener que lidiar con navegadores.
+
+---
+
+#### 👉 Método 2: Configurar desde cero con `rclone config`
+
+Si prefieres configurarlo directamente en este VPS:
+
+1. Ejecuta:
+   ```bash
+   rclone config
+   ```
+2. Escribe **`n`** (New remote).
+3. Nombre: **`gdrive`**
+4. Tipo de almacenamiento: escribe **`drive`**
+5. `client_id` y `client_secret`: Déjalos en blanco presionando `Enter` (o pega los tuyos si los creaste).
+6. `scope`: escribe **`1`** (Full access).
+7. `service_account_file`: presiona `Enter`.
+8. `Edit advanced config?`: escribe **`n`**.
+9. `Use web browser to automatically authenticate/Use auto config?`: escribe **`n`** *(Importante: pon `n` porque un VPS no tiene pantalla ni navegador gráfico)*.
+10. Te mostrará un comando o un enlace largo:
+    - Copia el enlace en el navegador de tu PC, inicia sesión con tu cuenta de 5TB de Google y dale "Permitir".
+    - Te dará un código de autorización.
+    - Cópialo, pégalo en la terminal del VPS y presiona `Enter`.
+11. `Configure this as a Shared Drive (Team Drive)?`: escribe **`n`** (a menos que sea una unidad compartida, en cuyo caso pon `y`).
+12. Confirma con **`y`** y sal con **`q`**.
+
+---
+
+### Paso 2.3: Crear la carpeta `Movies` y verificar la conexión
+
+Una vez configurado (por cualquiera de los dos métodos), ejecuta en tu nuevo VPS:
+
+1. **Crear la carpeta `Movies`:**
+   ```bash
+   rclone mkdir gdrive:Movies
+   ```
+
+2. **Verificar que Rclone tiene acceso a tu Drive:**
+   ```bash
+   rclone lsd gdrive:
+   ```
+   Deberías ver listadas tus carpetas (por ejemplo `Series` y `Movies`):
+   ```text
+             -1 2026-09-07 12:00:00        -1 Series
+             -1 2026-09-07 17:00:00        -1 Movies
+   ```
+
+3. **Probar que el script reconoce la conexión:**
+   Dentro de la carpeta `driveplaytv`, ejecuta:
+   ```bash
+   python3 ravedownmovie.py --stats
+   ```
+
+En cuanto veas la carpeta `Movies` listada en `rclone lsd gdrive:`, ya puedes lanzar la importación del sitemap y dejarlo descargando en `tmux`.
