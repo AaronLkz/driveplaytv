@@ -9,12 +9,13 @@ Suite completa de herramientas para descargar series y películas en máxima cal
 
 - [🍿 Novedades: Ravedown Movie 1.0 (Películas)](#-novedades-ravedown-movie-10-películas)
 - [📺 Novedades: Ravedown 3.0 (Series)](#-novedades-ravedown-30-series)
+- [🐧 Instalación en VPS Ubuntu ARM (ARM64)](#-instalación-en-vps-ubuntu-arm-arm64)
 - [☁️ Cómo Conectar la Carpeta Movies en Rclone](#️-cómo-conectar-la-carpeta-movies-en-rclone)
 - [⚙️ Configuración (`config.json`)](#️-configuración-configjson)
 - [🚀 Modo de Uso: Películas (`ravedownmovie.py`)](#-modo-de-uso-películas-ravedownmoviepy)
 - [📖 Modo de Uso: Series (`ravedown.py` y `ravedown3.0.sh`)](#-modo-de-uso-series-ravedownpy-y-ravedown30sh)
 - [💻 Scripts de Descarga Local en PC (Sin Rclone)](#-scripts-de-descarga-local-en-pc-sin-rclone)
-- [⚡ Solución al Problema de Rate Limits en Google Drive](#-solución-al-problema-de-rate-limits-en-google-drive)
+- [⚡ Solución al Problema de Rate Limits & Client ID Propio](#-solución-al-problema-de-rate-limits--client-id-propio)
 - [📁 Estructura del Proyecto](#-estructura-del-proyecto)
 
 ---
@@ -56,6 +57,52 @@ Diseñado para aprovechar al máximo tu conexión y almacenamiento en la nube pa
    - Cada episodio se descarga, se sube de inmediato a Google Drive y se borra la copia local para no agotar el disco de tu PC.
 4. **Base de Datos y Cola en Vivo**:
    - Cola `queue.txt` y registro en `ravedown.db` para evitar descargas duplicadas.
+
+---
+
+## 🐧 Instalación en VPS Ubuntu ARM (ARM64)
+
+Si utilizas un VPS con procesador ARM (como **Oracle Cloud Always Free Ampere A1**, **AWS Graviton**, **Hetzner ARM64** o cualquier servidor Ubuntu aarch64), sigue estos pasos para dejar tu entorno 100% optimizado y listo para correr:
+
+### 1. Actualizar el sistema e instalar dependencias base
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3 python3-pip python3-venv ffmpeg tmux wget curl git
+```
+> [!IMPORTANT]
+> **FFmpeg** es fundamental: `yt-dlp` lo utiliza obligatoriamente para fusionar video y audio en streams HLS y validar los contenedores MP4.
+
+### 2. Instalación de `yt-dlp` en ARM64 (¡Evitar `apt install yt-dlp`!)
+> [!WARNING]
+> **No instales `yt-dlp` con `apt`**: Los repositorios de Ubuntu traen versiones muy desactualizadas que fallan con los extractores y reproductores modernos.
+
+Descarga directamente el **binario compilado oficial para arquitectura ARM64 (`aarch64`)**:
+```bash
+# 1. Descargar el binario oficial ARM64
+sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64 -O /usr/local/bin/yt-dlp
+
+# 2. Dar permisos de ejecución
+sudo chmod a+rx /usr/local/bin/yt-dlp
+
+# 3. Verificar que quedó instalado y funcional
+yt-dlp --version
+```
+*(Para actualizarlo en el futuro en cualquier momento a la última versión, basta con ejecutar `sudo yt-dlp -U`).*
+
+### 3. Instalación de Rclone en Ubuntu ARM
+El instalador oficial de Rclone detecta automáticamente la arquitectura ARM64 e instala la versión más reciente:
+```bash
+sudo -v ; curl https://rclone.org/install.sh | sudo bash
+
+# Verificar versión instalada
+rclone version
+```
+
+### 4. Clonar el repositorio en tu VPS
+```bash
+git clone https://github.com/AaronLkz/driveplaytv.git
+cd driveplaytv
+```
 
 ---
 
@@ -287,26 +334,95 @@ chmod +x animeav1down2.5.sh
 
 ---
 
-## ⚡ Solución al Problema de Rate Limits en Google Drive
+## ⚡ Solución al Problema de Rate Limits & Client ID Propio
 
-### ¿Por qué se queda colgado en `200MB / 200MB (100%)` tras muchos videos?
-1. **Client ID Compartido**: Por defecto, Rclone usa un ID público compartido por miles de usuarios. Tras 100-150 videos consecutivos, Google activa el límite de peticiones (`403 User Rate Limit Exceeded`).
-2. **Commit Final y Checksum**: Al llegar al 100%, Google Drive calcula el hash MD5 y crea las carpetas remotas.
-3. **Traversals Innecesarios**: Sin `--no-traverse`, Rclone consulta toda la carpeta remota antes de cada archivo.
+### ¿Por qué se queda colgado en `200MB / 200MB (100%)` o tarda mucho tras subir varios videos?
+1. **Client ID Público Compartido**: Por defecto, si no configuras tus propias credenciales, Rclone utiliza el Client ID público de Rclone. Como millones de personas lo usan a nivel mundial, Google activa frecuentemente el límite por IP y por API (`403 User Rate Limit Exceeded`).
+2. **Commit Final y Checksums de Drive**: Al llegar al 100%, Google Drive procesa el hash MD5 y el registro en el índice de archivos. Si la API está saturada, este paso puede tardar minutos o fallar.
+3. **Traversals Innecesarios**: Sin la opción `--no-traverse`, Rclone lista recursivamente la carpeta remota antes de cada archivo que sube, agotando rápidamente la cuota de peticiones por minuto.
 
-### Soluciones ya integradas en Ravedown:
-- **`--drive-chunk-size=128M`**: Sube archivos en solo 1 o 2 bloques en lugar de 4+, reduciendo las llamadas HTTP a la mitad.
-- **`--no-traverse`**: Sube directo sin escanear carpetas remotas antes.
-- **`--tpslimit=8` y `--drive-pacer-min-sleep=200ms`**: Regula la tasa de peticiones a la API para prevenir bloqueos.
-- **Timeouts automáticos**: Si una subida se atasca, la cancela limpiamente y reintenta con backoff.
+---
 
-### 🔑 Recomendación: Crear tu propio Google Client ID (2 minutos)
-1. Entra a [Google Cloud Console](https://console.cloud.google.com/).
-2. Crea un proyecto nuevo (ej. `MiDriveRclone`).
-3. En **APIs & Services** > **Library**, activa **Google Drive API**.
-4. En **APIs & Services** > **Credentials** > **Create Credentials**, elige **OAuth client ID** (tipo **Desktop App**).
-5. Copia tu `Client ID` y `Client Secret`.
-6. Ejecuta `rclone config`, edita tu remote y pega tus credenciales propias.
+### 🛡️ Optimizaciones ya integradas en `ravedownmovie.py` y `ravedown.py`:
+- **`--drive-chunk-size=128M`**: Sube archivos grandes en bloques de 128 MB en vez de 8 MB, reduciendo la cantidad de llamadas HTTP a la API en más de un 90%.
+- **`--no-traverse`**: Sube el archivo directamente a la ruta de destino sin escanear el contenido previo de Google Drive.
+- **`--tpslimit=8` y `--drive-pacer-min-sleep=200ms`**: Regula la tasa máxima de transacciones por segundo para evitar picos que alerten a Google.
+- **Cooldown post-subida (`upload_cooldown_seconds: 3`)**: Pausa de seguridad de 3 segundos entre películas consecutivas para dejar respirar a la API.
+- **Reintentos con Backoff Exponencial**: Si Google devuelve un código 429 o `userRateLimitExceeded`, el script no se rompe: detecta el error automáticamente, pausa `30s * intento` y reanuda la subida.
+
+---
+
+### 🔑 Paso a Paso: Crear tu Propio Google Client ID (Recomendado para Máxima Estabilidad)
+
+Tener tu propio Client ID te otorga **1,000,000 de consultas al día exclusivas para tu cuenta**, garantizando velocidad máxima y cero bloqueos.
+
+#### Paso 1: Crear el proyecto en Google Cloud
+1. Entra a [Google Cloud Console](https://console.cloud.google.com/) e inicia sesión con tu cuenta de Google.
+2. En la barra superior, haz clic en el selector de proyectos y elige **"New Project"** (o **"Nuevo Proyecto"**).
+3. Nómbralo como quieras (ej. `MiDriveRclone`) y pulsa **Create**.
+
+#### Paso 2: Habilitar la API de Google Drive
+1. En el menú lateral izquierdo (☰), ve a **APIs & Services** > **Library** (o **Biblioteca**).
+2. Busca `Google Drive API`, selecciónala y haz clic en **Enable** (Habilitar).
+
+#### Paso 3: Configurar la Pantalla de Consentimiento (OAuth Consent Screen)
+1. En el menú lateral, ve a **APIs & Services** > **OAuth consent screen**.
+2. Selecciona **External** (Externo) y haz clic en **Create**.
+3. Rellena los datos básicos:
+   - **App name**: `Rclone Drive`
+   - **User support email**: Tu correo de Gmail.
+   - **Developer contact information**: Tu correo de Gmail.
+4. Pulsa **Save and Continue** en todas las secciones hasta llegar a **Test users** (Usuarios de prueba).
+5. En **Test users**, haz clic en **+ ADD USERS** y escribe tu mismo correo de Gmail. *(Paso crucial para que Google te permita acceder sin verificar la aplicación).*
+6. Pulsa **Save and Continue**.
+
+#### Paso 4: Generar las Credenciales
+1. En el menú lateral, ve a **APIs & Services** > **Credentials**.
+2. Haz clic arriba en **+ CREATE CREDENTIALS** > **OAuth client ID**.
+3. En **Application type**, selecciona **Desktop app** (Aplicación de escritorio).
+4. En **Name**, escribe `Rclone` y pulsa **Create**.
+5. Se abrirá una ventana con tu **Client ID** y tu **Client Secret**. Cópialos y guárdalos.
+
+---
+
+### 💻 Cómo Vincular tus Credenciales en Rclone en un VPS sin Navegador (Headless)
+
+Como un VPS por lo general no tiene interfaz gráfica ni navegador web, Rclone utiliza un mecanismo muy simple:
+
+1. **En la terminal de tu VPS:**
+   ```bash
+   rclone config
+   ```
+2. Elige `e` (Editar remote existente) y selecciona tu remote (ej. `gdrive`).
+3. Cuando te pida `client_id`, pega tu Client ID propio.
+4. Cuando te pida `client_secret`, pega tu Client Secret propio.
+5. En `scope`, elige `1` (Full access all files).
+6. En `root_folder_id`, presiona `Enter` (dejar vacío si quieres ver la raíz).
+7. Cuando pregunte:
+   ```text
+   Use web browser to automatically authenticate?
+   y) Yes
+   n) No
+   ```
+   **Responde `n` (No)**.
+8. Rclone te mostrará en la terminal un comando como este:
+   ```bash
+   rclone authorize "drive" "TU_CLIENT_ID" "TU_CLIENT_SECRET"
+   ```
+9. **En tu PC local** (en tu Windows en PowerShell o Mac/Linux donde tengas `rclone` instalado y navegador web):
+   - Abre tu terminal local y pega ese comando exacto.
+   - Se abrirá tu navegador web, selecciona tu cuenta de Google, haz clic en **"Continuar"** (si sale advertencia de seguridad, dale a Avanzado -> Continuar) y acepta los permisos.
+   - En tu terminal local aparecerá un bloque JSON largo parecido a:
+     ```json
+     {"access_token":"ya29.a0...","token_type":"Bearer","refresh_token":"1//04...","expiry":"..."}
+     ```
+10. **Copia todo ese bloque JSON** y pégalo en la terminal de tu VPS cuando te pida:
+    ```text
+    Paste config token here:
+    ```
+11. Confirma con `y` y guarda.
+
+¡Listo! A partir de ese momento, tanto `ravedownmovie.py` como `ravedown.py` utilizarán tu cuota privada con máxima estabilidad y sin bloqueos de peticiones.
 
 ---
 

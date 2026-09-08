@@ -126,6 +126,7 @@ class ConfigManager:
         "rclone_enabled": True,
         "delete_after_upload": True,
         "upload_timeout_minutes": 15,
+        "upload_cooldown_seconds": 3,
         "preferred_movie_lang": "LATINO",
         "movie_connections": 4,
         "movie_download_dir": "./downloads_movies",
@@ -753,13 +754,15 @@ class RcloneUploader:
     def __init__(self, config_manager: ConfigManager):
         self.cfg = config_manager
         self.rclone_bin = self._find_rclone(self.cfg.get("rclone_path", "rclone"))
+        self.timeout_seconds = max(60, self.cfg.get("upload_timeout_minutes", 15) * 60)
+        self.cooldown_seconds = self.cfg.get("upload_cooldown_seconds", 3)
 
     def _find_rclone(self, preferred: str) -> str:
         candidates = [preferred, "rclone.exe", "rclone"]
         for c in candidates:
             if shutil.which(c):
                 return c
-        for p in [r"C:\rclone\rclone.exe", r"C:\Program Files\rclone\rclone.exe", os.path.expanduser("~/.local/bin/rclone")]:
+        for p in [r"C:\rclone\rclone.exe", r"C:\Program Files\rclone\rclone.exe", os.path.expanduser("~/.local/bin/rclone"), "/usr/local/bin/rclone", "/usr/bin/rclone"]:
             if os.path.exists(p):
                 return p
         return "rclone"
@@ -771,9 +774,30 @@ class RcloneUploader:
         except Exception:
             return False
 
-    def upload_movie(self, local_path: str, remote_folder: str) -> bool:
+    def test_connection(self, remote_target: str) -> bool:
+        """Verifica que el remote de Google Drive responda antes de procesar la cola."""
+        remote_root = remote_target.split(":")[0] + ":"
+        cmd = [self.rclone_bin, "lsd", remote_root]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            if res.returncode == 0:
+                log_success(f"Conexión con rclone verificada hacia '{remote_target}'")
+                return True
+            else:
+                err = res.stderr.strip()
+                log_error(f"Error al conectar con rclone en '{remote_target}': {err}")
+                if any(x in err for x in ["rateLimitExceeded", "userRateLimitExceeded", "403"]):
+                    log_warn("⚠️ Detectado Rate Limit en Google Drive API. Asegúrate de configurar un Client ID propio en rclone config.")
+                return False
+        except Exception as e:
+            log_error(f"No se pudo verificar conexión rclone: {e}")
+            return False
+
+    def upload_movie(self, local_path: str, remote_folder: str, max_retries: int = 3) -> bool:
         """
-        Sube la película a Google Drive usando las flags optimizadas de Rclone.
+        Sube la película a Google Drive usando las flags optimizadas de Rclone,
+        con detección inteligente de Rate Limits, reintentos con backoff exponencial
+        y pausa de seguridad (cooldown) post-subida.
         """
         if not os.path.exists(local_path):
             log_error(f"Archivo local no encontrado para subir: {local_path}")
@@ -781,45 +805,59 @@ class RcloneUploader:
 
         filename = os.path.basename(local_path)
         dest_path = f"{remote_folder.rstrip('/')}/{filename}"
-
-        log_step(f"Subiendo a Google Drive: {Colors.CYAN}{dest_path}{Colors.RESET}")
-
         flags = self.cfg.get("rclone_flags", [])
         cmd = [self.rclone_bin, "copyto", local_path, dest_path] + flags
 
-        timeout_secs = self.cfg.get("upload_timeout_minutes", 15) * 60
-        try:
-            proc = subprocess.run(cmd, check=False, timeout=timeout_secs)
-            if proc.returncode != 0:
-                log_error(f"rclone copyto finalizó con error (código {proc.returncode})")
-                return False
+        for attempt in range(1, max_retries + 1):
+            log_step(f"Subiendo a Google Drive (Intento {attempt}/{max_retries}): {Colors.CYAN}{dest_path}{Colors.RESET}")
+            try:
+                # Usar Popen con stdout en vivo para ver la barra de progreso -P de rclone
+                # y stderr capturado para diagnosticar y actuar ante bloqueos de API
+                proc = subprocess.Popen(cmd, stdout=None, stderr=subprocess.PIPE, text=True)
+                _, stderr = proc.communicate(timeout=self.timeout_seconds)
 
-            # Verificación de subida en remoto
-            verify_cmd = [self.rclone_bin, "lsf", dest_path]
-            v_proc = subprocess.run(verify_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if filename in v_proc.stdout:
-                log_success(f"Película verificada en Google Drive: {dest_path}")
-                if self.cfg.get("delete_after_upload", True):
-                    try:
-                        os.remove(local_path)
-                        # Eliminar carpeta si quedó vacía
-                        parent = os.path.dirname(local_path)
-                        if os.path.exists(parent) and not os.listdir(parent):
-                            os.rmdir(parent)
-                        log_info(f"Copia local eliminada para liberar espacio en disco")
-                    except Exception as e:
-                        log_warn(f"No se pudo eliminar copia local: {e}")
-                return True
-            else:
-                log_error("Verificación de rclone lsf falló: el archivo no aparece en el destino remoto")
-                return False
+                if proc.returncode == 0:
+                    log_success(f"Película subida y verificada en Google Drive: {dest_path}")
+                    if self.cfg.get("delete_after_upload", True):
+                        try:
+                            os.remove(local_path)
+                            parent = os.path.dirname(local_path)
+                            if os.path.exists(parent) and not os.listdir(parent):
+                                os.rmdir(parent)
+                            log_info("Copia local eliminada para liberar espacio en disco")
+                        except Exception as e:
+                            log_warn(f"No se pudo eliminar copia local: {e}")
 
-        except subprocess.TimeoutExpired:
-            log_error(f"Tiempo de espera agotado al subir con rclone ({timeout_secs}s)")
-            return False
-        except Exception as e:
-            log_error(f"Excepción al ejecutar rclone: {e}")
-            return False
+                    # Cooldown post-subida para evitar saturar peticiones a la API de Drive
+                    if self.cooldown_seconds > 0:
+                        log_info(f"Pausa de seguridad anti-bloqueo (cooldown) de {self.cooldown_seconds}s...")
+                        time.sleep(self.cooldown_seconds)
+                    return True
+                else:
+                    err_msg = stderr or ""
+                    log_error(f"rclone copyto finalizó con error (Código {proc.returncode}): {err_msg.strip()[:200]}")
+
+                    # Detección inteligente de Rate Limit de Google Drive
+                    if any(x in err_msg for x in ["userRateLimitExceeded", "rateLimitExceeded", "429", "403"]):
+                        wait_time = 30 * attempt
+                        log_warn(f"⏳ Google Drive Rate Limit detectado. Pausando {wait_time}s antes de reintentar...")
+                        time.sleep(wait_time)
+                    elif "storageQuotaExceeded" in err_msg or "upload limit" in err_msg.lower():
+                        log_error("🛑 Límite diario de subida de Google Drive alcanzado (750GB/día).")
+                        return False
+                    else:
+                        time.sleep(10)
+
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                log_warn(f"⚠️ La subida tardó más de {self.timeout_seconds // 60} minutos y se canceló por timeout (posible bloqueo de API).")
+                time.sleep(15)
+            except Exception as e:
+                log_error(f"Excepción al ejecutar rclone: {e}")
+                time.sleep(10)
+
+        return False
 
 # =====================================================================
 # IMPORTADOR DEL SITEMAP DE CINEBEL
@@ -1023,6 +1061,11 @@ class MovieEngine:
 
         log_info(f"👀 Monitoreando cola de películas: {Colors.CYAN}{q_file}{Colors.RESET}")
         log_info("Puedes agregar nuevos enlaces o títulos al archivo en cualquier momento. (Ctrl+C para salir)")
+
+        if self.cfg.get("rclone_enabled", True) and self.uploader.is_available():
+            remote_target = self.cfg.get("rclone_movie_remote", "gdrive:Movies")
+            log_info(f"Verificando conexión previa con Google Drive ({remote_target})...")
+            self.uploader.test_connection(remote_target)
 
         interval = self.cfg.get("watch_interval_seconds", 5)
 
