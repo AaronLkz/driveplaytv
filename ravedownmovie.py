@@ -727,8 +727,9 @@ class FastDownloader:
             "--user-agent", self.ua,
             "--retries", "5",
             "--fragment-retries", "5",
-            "--concurrent-fragments", "5",
+            "--concurrent-fragments", str(self.num_threads or 5),
             "--buffer-size", "16M",
+            "--hls-use-mpegts",
             url
         ]
         if referer:
