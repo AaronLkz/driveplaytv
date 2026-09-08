@@ -102,7 +102,7 @@ rclone version
 ### 4. Clonar el repositorio en tu VPS
 ```bash
 git clone https://github.com/AaronLkz/driveplaytv.git
-cd driveplaytv
+cd ~/driveplaytv
 ```
 
 ---
@@ -147,7 +147,7 @@ tmux new -s series
 #### Paso 2: Ejecutar el descargador
 Dentro de esa sesión de tmux, entra a la carpeta y lanza el monitor de cola:
 ```bash
-cd driveplaytv
+cd ~/driveplaytv
 python3 ravedownmovie.py --queue
 ```
 Verás el progreso de descarga y la subida en tiempo real a Google Drive.
@@ -198,11 +198,13 @@ Puedes tener dos sesiones independientes corriendo simultáneamente en el mismo 
 ```bash
 # Sesión 1: Series
 tmux new -s series
+cd ~/driveplaytv
 python3 ravedown.py --queue
 # Presiona: Ctrl+B, luego D
 
 # Sesión 2: Películas
 tmux new -s movies
+cd ~/driveplaytv
 python3 ravedownmovie.py --queue
 # Presiona: Ctrl+B, luego D
 ```
