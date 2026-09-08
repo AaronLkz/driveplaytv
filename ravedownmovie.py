@@ -28,6 +28,7 @@ import threading
 import urllib.request
 import urllib.parse
 import urllib.error
+import html
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple, Any
@@ -340,8 +341,10 @@ class MovieDaysExtractor:
         return str(int(now)), ""
 
     def search_movie(self, query: str) -> List[Dict[str, Any]]:
-        clean_q = query.strip()
-        encoded = urllib.parse.quote(clean_q)
+        clean_q = query.strip().replace("-", " ")
+        words = [w for w in clean_q.split() if w.lower() not in ['la', 'el', 'los', 'las', 'de', 'del', 'the', 'un', 'una', 'pelicula', 'movie']]
+        search_term = " ".join(words[:5]) if words else clean_q
+        encoded = urllib.parse.quote(search_term)
         url = f"{self.base_url}/api/search.php?q={encoded}&type=movie"
         req = urllib.request.Request(url, headers={
             "User-Agent": self.ua,
@@ -356,6 +359,79 @@ class MovieDaysExtractor:
             log_warn(f"Error en búsqueda de película '{query}': {e}")
         return []
 
+    def find_best_match(self, query: str, results: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Evalúa y clasifica los resultados de TMDB para evitar falsos positivos
+        (como películas mudas o desconocidas de 1 solo voto con títulos parecidos).
+        """
+        if not results:
+            return None
+        if len(results) == 1:
+            return results[0]
+
+        clean_q = re.sub(r'[^a-zA-Z0-9\s]', ' ', query.lower().replace("-", " "))
+        stopwords = {'la', 'el', 'los', 'las', 'de', 'del', 'the', 'un', 'una', 'unos', 'unas', 'a', 'en', 'y', 'pelicula', 'movie'}
+        q_tokens = set([w for w in clean_q.split() if w and w not in stopwords])
+        if not q_tokens:
+            q_tokens = set(clean_q.split())
+
+        best_cand = None
+        best_score = -999.0
+
+        for idx, item in enumerate(results[:6]):
+            title = item.get("title", "").lower()
+            title_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', title)
+            title_tokens = set([w for w in title_clean.split() if w and w not in stopwords])
+
+            # Similitud de tokens con la búsqueda/slug
+            overlap = len(q_tokens.intersection(title_tokens))
+            similarity = overlap / max(1, len(q_tokens))
+
+            # TMDB ordena sus resultados por popularidad; penalización suave por posición
+            score = (similarity * 100.0) - (idx * 6.0)
+
+            # Bonus si la frase entera coincide o es subcadena
+            norm_q = " ".join([w for w in clean_q.split() if w not in stopwords])
+            norm_t = " ".join([w for w in title_clean.split() if w not in stopwords])
+            if norm_q and norm_t and (norm_q in norm_t or norm_t in norm_q):
+                score += 35.0
+
+            # Penalización fuerte si es una película antigua (< 1975) que casi nunca es la de Cinebel
+            year_str = str(item.get("year") or item.get("release_date") or "")[:4]
+            if year_str.isdigit() and int(year_str) < 1975:
+                score -= 45.0
+
+            if score > best_score:
+                best_score = score
+                best_cand = item
+
+        return best_cand if best_cand else results[0]
+
+    def get_latino_title(self, tmdb_id: int, fallback_title: str = "") -> Tuple[str, str]:
+        """
+        Consulta la ficha oficial de TMDB con language=es-MX y Accept-Language: es-MX
+        para obtener el título oficial localizado para Latinoamérica y el año.
+        Ej: 'El Club de la Pelea' (no 'El club de la lucha'),
+            'Avengers 2: Era de Ultrón' (no 'Vengadores: La era de Ultrón'),
+            'Tiempos Violentos' (no 'Pulp Fiction').
+        """
+        url = f"https://www.themoviedb.org/movie/{tmdb_id}?language=es-MX"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": self.ua,
+            "Accept-Language": "es-MX,es;q=0.9"
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                content = resp.read().decode("utf-8", errors="replace")
+                m = re.search(r'<title>(.*?)\s*\(([12]\d{3})\)\s*(?:&#8212;|—)\s*The Movie Database', content)
+                if m:
+                    title_latino = html.unescape(m.group(1)).strip()
+                    year_latino = m.group(2).strip()
+                    return title_latino, year_latino
+        except Exception:
+            pass
+        return fallback_title, ""
+
     def parse_input(self, raw_input: str) -> Tuple[Optional[int], Optional[str]]:
         """
         Recibe una entrada que puede ser:
@@ -366,6 +442,9 @@ class MovieDaysExtractor:
         Retorna (tmdb_id, query_fallback).
         """
         clean = raw_input.strip()
+        # Eliminar comentarios en línea (ej. "tmdb:24428 # Vengadores (2012)")
+        if "#" in clean:
+            clean = clean.split("#")[0].strip()
 
         # 1. Si es ID numérico directo
         if clean.isdigit():
@@ -384,8 +463,7 @@ class MovieDaysExtractor:
         # 3. Si es URL de Cinebel
         if "cinebel.cc/movies/" in clean:
             slug = clean.rstrip("/").split("/")[-1]
-            slug_clean = slug.replace("-", " ")
-            return None, slug_clean
+            return None, slug
 
         # 4. Texto libre / título
         return None, clean
@@ -829,9 +907,12 @@ class MovieEngine:
             if not results:
                 log_error(f"No se encontraron resultados en TMDB para: {query}")
                 return False
-            best = results[0]
+            best = self.extractor.find_best_match(query, results)
+            if not best:
+                log_error(f"No se pudo determinar coincidencia confiable en TMDB para: {query}")
+                return False
             tmdb_id = best.get("id")
-            log_info(f"Coincidencia TMDB: {Colors.GREEN}{best.get('title')} ({best.get('release_date', '')[:4]}) [ID: {tmdb_id}]{Colors.RESET}")
+            log_info(f"Coincidencia TMDB: {Colors.GREEN}{best.get('title')} ({best.get('release_date', '')[:4] or best.get('year', '')}) [ID: {tmdb_id}]{Colors.RESET}")
 
         # 2. Verificar si ya fue completada previamente en la BD
         if self.db.is_movie_completed(tmdb_id):
@@ -846,13 +927,23 @@ class MovieEngine:
             return False
 
         title = sanitize_filename(details.get("title") or f"Pelicula_{tmdb_id}")
-        year = details.get("release_date", "")[:4] or details.get("year", "") or "2024"
-        servers = details.get("servers", [])
+        year = details.get("release_date", "")[:4] or details.get("year", "") or ""
 
+        # Si el idioma preferido es LATINO, obtener el título oficial latinoamericano de TMDB
+        pref_lang = self.cfg.get("preferred_movie_lang", "LATINO")
+        if pref_lang.upper() == "LATINO":
+            lat_title, lat_year = self.extractor.get_latino_title(tmdb_id, title)
+            if lat_title:
+                title = sanitize_filename(lat_title)
+            if lat_year:
+                year = lat_year
+        if not year:
+            year = "2024"
+
+        servers = details.get("servers", [])
         log_info(f"🎬 Película: {Colors.BOLD}{title} ({year}){Colors.RESET} | Servidores disponibles: {len(servers)}")
 
         # 4. Resolver mejor stream (Prioridad Rumble .aaa.mp4)
-        pref_lang = self.cfg.get("preferred_movie_lang", "LATINO")
         best_source = self.extractor.resolve_best_source(servers, preferred_lang=pref_lang)
         if not best_source:
             log_error(f"No se pudo extraer ningún enlace de video utilizable para: {title}")
