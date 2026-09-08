@@ -11,6 +11,7 @@ Suite completa de herramientas para descargar series y películas en máxima cal
 - [📺 Novedades: Ravedown 3.0 (Series)](#-novedades-ravedown-30-series)
 - [🐧 Instalación en VPS Ubuntu ARM (ARM64)](#-instalación-en-vps-ubuntu-arm-arm64)
 - [📟 Guía Completa de Tmux: Ejecución en Segundo Plano 24/7](#-guía-completa-de-tmux-ejecución-en-segundo-plano-247)
+- [🎞️ Instalación y Verificación de FFmpeg (Linux, Windows y Mac)](#-instalación-y-verificación-de-ffmpeg-linux-windows-y-mac)
 - [☁️ Cómo Conectar la Carpeta Movies en Rclone](#️-cómo-conectar-la-carpeta-movies-en-rclone)
 - [⚙️ Configuración (`config.json`)](#️-configuración-configjson)
 - [🚀 Modo de Uso: Películas (`ravedownmovie.py`)](#-modo-de-uso-películas-ravedownmoviepy)
@@ -65,15 +66,25 @@ Diseñado para aprovechar al máximo tu conexión y almacenamiento en la nube pa
 
 Si utilizas un VPS con procesador ARM (como **Oracle Cloud Always Free Ampere A1**, **AWS Graviton**, **Hetzner ARM64** o cualquier servidor Ubuntu aarch64), sigue estos pasos para dejar tu entorno 100% optimizado y listo para correr:
 
-### 1. Actualizar el sistema e instalar dependencias base
+### 1. Actualizar el sistema e instalar utilidades base
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3 python3-pip python3-venv ffmpeg tmux wget curl git
+sudo apt install -y python3 python3-pip python3-venv tmux wget curl git
 ```
-> [!IMPORTANT]
-> **FFmpeg** es fundamental: `yt-dlp` lo utiliza obligatoriamente para fusionar video y audio en streams HLS y validar los contenedores MP4.
 
-### 2. Instalación de `yt-dlp` en ARM64 (¡Evitar `apt install yt-dlp`!)
+### 2. Instalación y Verificación de FFmpeg
+`yt-dlp` requiere **FFmpeg** obligatoriamente para descargar streams HLS, fusionar video y audio en un solo `.mp4`, y validar la integridad de los contenedores de video.
+
+```bash
+# 1. Instalar FFmpeg oficial
+sudo apt update && sudo apt install -y ffmpeg
+
+# 2. Verificar que FFmpeg esté correctamente instalado
+ffmpeg -version
+```
+*(Debe responder mostrando la versión de FFmpeg y los códecs soportados como `libx264`, `aac`, etc.).*
+
+### 3. Instalación de `yt-dlp` en ARM64 (¡Evitar `apt install yt-dlp`!)
 > [!WARNING]
 > **No instales `yt-dlp` con `apt`**: Los repositorios de Ubuntu traen versiones muy desactualizadas que fallan con los extractores y reproductores modernos.
 
@@ -90,7 +101,7 @@ yt-dlp --version
 ```
 *(Para actualizarlo en el futuro en cualquier momento a la última versión, basta con ejecutar `sudo yt-dlp -U`).*
 
-### 3. Instalación de Rclone en Ubuntu ARM
+### 4. Instalación de Rclone en Ubuntu ARM
 El instalador oficial de Rclone detecta automáticamente la arquitectura ARM64 e instala la versión más reciente:
 ```bash
 sudo -v ; curl https://rclone.org/install.sh | sudo bash
@@ -99,7 +110,7 @@ sudo -v ; curl https://rclone.org/install.sh | sudo bash
 rclone version
 ```
 
-### 4. Clonar el repositorio en tu VPS
+### 5. Clonar el repositorio en tu VPS
 ```bash
 git clone https://github.com/AaronLkz/driveplaytv.git
 cd ~/driveplaytv
@@ -212,6 +223,82 @@ Para verificar que ambas siguen vivas y trabajando en segundo plano:
 ```bash
 tmux ls
 ```
+
+---
+
+## 🎞️ Instalación y Verificación de FFmpeg (Linux, Windows y Mac)
+
+### ¿Por qué FFmpeg es fundamental para `yt-dlp`?
+Tanto en series como en películas con reproductor HLS (`.m3u8`), el video y el audio suelen transmitirse en pistas separadas o en cientos de pequeños fragmentos (`.ts`). **FFmpeg es el motor multimedia indispensable que `yt-dlp` utiliza para**:
+1. **Unir fragmentos**: Descarga las partes del stream y las ensambla en orden secuencial sin pérdida de calidad.
+2. **Multiplexar audio y video**: Si el servidor entrega el video 1080p por un canal y el audio latino por otro, FFmpeg los fusiona en un único archivo `.mp4` perfectamente sincronizado.
+3. **Corregir encabezados (Remux)**: Escribe la tabla de contenidos (`moov atom`) al inicio del archivo MP4 para que los reproductores y navegadores puedan hacer saltos de tiempo (seek) sin trabarse.
+
+Sin FFmpeg instalado, `yt-dlp` emitirá la advertencia `ffmpeg not found` y no podrá procesar la mayoría de calidades HD.
+
+---
+
+### 1. En Linux (Ubuntu / Debian / VPS ARM y x86)
+```bash
+sudo apt update && sudo apt install -y ffmpeg
+
+# Verificar instalación:
+ffmpeg -version
+```
+
+---
+
+### 2. En Windows (PC Local para Scripts de Descarga Local)
+
+Si utilizas `ravedown2.5.sh`, `animeav1down2.5.sh` o los scripts de Python en tu PC con Windows:
+
+#### Opción A (Recomendada con Windows Package Manager - `winget`):
+Abre **PowerShell** o **Terminal** como Administrador y ejecuta:
+```powershell
+winget install Gyan.FFmpeg
+```
+*(Cierra y vuelve a abrir la terminal para que reconozca el nuevo comando).*
+
+#### Opción B (Con Chocolatey o Scoop):
+```powershell
+# Si usas Chocolatey:
+choco install ffmpeg -y
+
+# Si usas Scoop:
+scoop install ffmpeg
+```
+
+#### Opción C (Descarga Manual):
+1. Descarga el paquete ZIP desde [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/) (elige `ffmpeg-release-essentials.zip`).
+2. Descomprime la carpeta en `C:\ffmpeg`.
+3. Agrega la ruta `C:\ffmpeg\bin` a la variable de entorno `PATH` del sistema.
+
+#### Verificación en Windows:
+En cualquier terminal (PowerShell o CMD):
+```powershell
+ffmpeg -version
+```
+Debe devolver `ffmpeg version 6.x` o `7.x`.
+
+---
+
+### 3. En macOS
+```bash
+brew install ffmpeg
+
+# Verificar instalación:
+ffmpeg -version
+```
+
+---
+
+### 4. ¿Cómo verificar que `yt-dlp` reconoce FFmpeg?
+Ejecuta en tu terminal:
+```bash
+yt-dlp --version
+ffmpeg -version
+```
+Si ambos comandos devuelven su versión sin errores, `yt-dlp` detectará FFmpeg de forma automática en cada descarga.
 
 ---
 
