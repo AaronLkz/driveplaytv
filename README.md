@@ -10,6 +10,7 @@ Suite completa de herramientas para descargar series y películas en máxima cal
 - [🍿 Novedades: Ravedown Movie 1.0 (Películas)](#-novedades-ravedown-movie-10-películas)
 - [📺 Novedades: Ravedown 3.0 (Series)](#-novedades-ravedown-30-series)
 - [🐧 Instalación en VPS Ubuntu ARM (ARM64)](#-instalación-en-vps-ubuntu-arm-arm64)
+- [📟 Guía Completa de Tmux: Ejecución en Segundo Plano 24/7](#-guía-completa-de-tmux-ejecución-en-segundo-plano-247)
 - [☁️ Cómo Conectar la Carpeta Movies en Rclone](#️-cómo-conectar-la-carpeta-movies-en-rclone)
 - [⚙️ Configuración (`config.json`)](#️-configuración-configjson)
 - [🚀 Modo de Uso: Películas (`ravedownmovie.py`)](#-modo-de-uso-películas-ravedownmoviepy)
@@ -102,6 +103,112 @@ rclone version
 ```bash
 git clone https://github.com/AaronLkz/driveplaytv.git
 cd driveplaytv
+```
+
+---
+
+## 📟 Guía Completa de Tmux: Ejecución en Segundo Plano 24/7
+
+### ¿Qué es Tmux y por qué es indispensable en tu VPS?
+Cuando te conectas a tu VPS mediante SSH (con PuTTY, PowerShell o la terminal de Linux/Mac), cualquier programa que ejecutes **se cancelará inmediatamente si cierras la ventana, se desconecta el WiFi o apagas tu ordenador**.
+
+**`tmux`** (Terminal Multiplexer) crea sesiones de terminal virtuales y persistentes dentro del servidor. Esto te permite:
+1. Dejar descargando y subiendo cientos de películas o series **de manera continua e ininterrumpida las 24 horas del día**.
+2. Desconectarte de tu VPS con total tranquilidad.
+3. Volver a conectarte horas o días después desde cualquier equipo y ver exactamente por dónde va la descarga.
+
+---
+
+### 1. Instalación de Tmux en Ubuntu / Debian
+```bash
+sudo apt update && sudo apt install -y tmux
+```
+
+Verificar que quedó instalado:
+```bash
+tmux -V
+```
+
+---
+
+### 2. Flujo Completo de Trabajo: Dejarlo Corriendo y Desconectarse
+
+#### Paso 1: Iniciar una sesión virtual con nombre
+Crea una sesión con un nombre identificativo:
+```bash
+# Para descargar películas:
+tmux new -s movies
+
+# O para descargar series:
+tmux new -s series
+```
+*(Se abrirá una nueva terminal limpia con una barra de estado verde en la parte inferior).*
+
+#### Paso 2: Ejecutar el descargador
+Dentro de esa sesión de tmux, entra a la carpeta y lanza el monitor de cola:
+```bash
+cd driveplaytv
+python3 ravedownmovie.py --queue
+```
+Verás el progreso de descarga y la subida en tiempo real a Google Drive.
+
+#### Paso 3: Desconectarte de la sesión (Detach) sin detener el programa
+Para salir de tmux y dejar el script corriendo en el fondo del VPS:
+1. Presiona en tu teclado la combinación: **`Ctrl + B`**
+2. Suelta ambas teclas.
+3. Presiona la tecla: **`D`** *(de Detach / Desconectar)*.
+
+Verás un mensaje en la consola como:
+```text
+[detached (from session movies)]
+```
+¡Listo! El descargador ya está corriendo de forma 100% autónoma en el servidor. Ya puedes cerrar la terminal, apagar tu PC o desconectarte.
+
+---
+
+### 3. Cómo Volver a Conectarte para Ver el Progreso (Attach)
+
+Cuando quieras revisar el estado de las descargas:
+1. Conéctate a tu VPS por SSH.
+2. Reconéctate a la sesión con:
+   ```bash
+   tmux attach -t movies
+   ```
+   *(Si es de series: `tmux attach -t series`)*.
+
+Volverás a ver la pantalla exactamente como la dejaste, con el progreso activo de las descargas.
+
+---
+
+### 4. Atajos y Comandos Esenciales de Tmux
+
+| Acción | Comando / Atajo de Teclado |
+| :--- | :--- |
+| **Crear nueva sesión** | `tmux new -s [nombre]` |
+| **Desconectarse (dejar en fondo)** | Presionar `Ctrl + B`, soltar y luego presionar `D` |
+| **Reconectar a una sesión** | `tmux attach -t [nombre]` |
+| **Listar sesiones activas** | `tmux ls` |
+| **Subir/Bajar en el historial (Scroll)** | `Ctrl + B`, luego `[` (usa las flechas o `RePág`/`AvPág`). Presiona `q` para salir del modo scroll. |
+| **Cerrar/Eliminar una sesión** | Escribir `exit` dentro de la sesión o ejecutar: `tmux kill-session -t [nombre]` |
+
+---
+
+### 💡 Consejo Pro: Descargar Películas y Series en Paralelo
+Puedes tener dos sesiones independientes corriendo simultáneamente en el mismo VPS sin que interfieran entre sí:
+```bash
+# Sesión 1: Series
+tmux new -s series
+python3 ravedown.py --queue
+# Presiona: Ctrl+B, luego D
+
+# Sesión 2: Películas
+tmux new -s movies
+python3 ravedownmovie.py --queue
+# Presiona: Ctrl+B, luego D
+```
+Para verificar que ambas siguen vivas y trabajando en segundo plano:
+```bash
+tmux ls
 ```
 
 ---
