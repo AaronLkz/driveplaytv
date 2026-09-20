@@ -1393,7 +1393,7 @@ def interactive_menu(engine: MovieEngine):
 def main():
     parser = argparse.ArgumentParser(description="Ravedown Movie 1.0 - Descargador de Películas a Máxima Velocidad")
     parser.add_argument("--url", "-u", help="URL de Cinebel, TMDB ID o título de película para procesar directamente")
-    parser.add_argument("--queue", "-q", action="store_true", help="Iniciar monitor continuo de cola (queuemovie.txt)")
+    parser.add_argument("--queue", "-q", "--daemon", "-d", dest="queue", action="store_true", help="Iniciar monitor continuo de cola (queuemovie.txt)")
     parser.add_argument("--import-sitemap", type=int, nargs="?", const=1, help="Importar películas del sitemap de Cinebel a la cola (opcional: número de página)")
     parser.add_argument("--limit", type=int, default=50, help="Límite de películas a importar del sitemap (por defecto 50)")
     parser.add_argument("--stats", action="store_true", help="Mostrar estadísticas de ravedownmovie.db")
