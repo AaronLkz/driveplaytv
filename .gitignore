@@ -1,1 +1,5 @@
 /beta_dist
+/vps
+*.bak
+scan_results.json
+*.db.bak

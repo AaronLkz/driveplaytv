@@ -115,6 +115,44 @@ def sanitize_filename(name: str) -> str:
     cleaned = re.sub(r'\s+', " ", cleaned).strip()
     return cleaned
 
+def get_free_disk_space_gb(path: str = ".") -> float:
+    """Retorna el espacio libre en gigabytes para la ruta dada."""
+    try:
+        check_path = path if os.path.exists(path) else "."
+        usage = shutil.disk_usage(os.path.abspath(check_path))
+        return usage.free / (1024 ** 3)
+    except Exception:
+        return 999.0
+
+def cleanup_orphaned_downloads(download_dir: str = "./downloads_movies") -> int:
+    """
+    Escanea la carpeta de descargas y elimina archivos temporales huérfanos (.part o carpetas vacías)
+    para garantizar que el disco del VPS nunca se llene por descargas interrumpidas.
+    """
+    if not os.path.exists(download_dir):
+        return 0
+    removed_count = 0
+    try:
+        for root, dirs, files in os.walk(download_dir, topdown=False):
+            for f in files:
+                fp = os.path.join(root, f)
+                if f.endswith(".part"):
+                    try:
+                        os.remove(fp)
+                        removed_count += 1
+                    except Exception:
+                        pass
+            if not os.listdir(root) and os.path.abspath(root) != os.path.abspath(download_dir):
+                try:
+                    os.rmdir(root)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if removed_count > 0:
+        log_info(f"Limpieza preventiva: {removed_count} archivo(s) .part temporal(es) eliminado(s)")
+    return removed_count
+
 # =====================================================================
 # GESTOR DE CONFIGURACIÓN
 # =====================================================================
@@ -125,6 +163,8 @@ class ConfigManager:
         "rclone_movie_remote": "gdrive:Movies",
         "rclone_enabled": True,
         "delete_after_upload": True,
+        "delete_on_failed_upload": True,
+        "min_free_disk_gb": 3.0,
         "upload_timeout_minutes": 15,
         "upload_cooldown_seconds": 3,
         "preferred_movie_lang": "LATINO",
@@ -486,20 +526,26 @@ class MovieDaysExtractor:
             log_error(f"Error al obtener ficha de TMDB {tmdb_id}: {e}")
         return None
 
-    def resolve_best_source(self, servers: List[Dict[str, Any]], preferred_lang: str = "LATINO") -> Optional[Dict[str, Any]]:
+    def resolve_candidate_sources(self, servers: List[Dict[str, Any]], preferred_lang: str = "LATINO") -> List[Dict[str, Any]]:
         """
-        Analiza cada reproductor de MovieDays y extrae los streams reales,
-        priorizando enlaces directos de Rumble CDN (.aaa.mp4) y el idioma preferido.
+        Analiza cada reproductor de MovieDays y extrae los streams reales disponibles,
+        filtrando y descartando completamente servidores protegidos no reproducibles (ej. Vimeos),
+        y priorizando enlaces directos de Rumble CDN (.aaa.mp4 / 1080p) e idioma preferido.
+        Retorna la lista completa de candidatos ordenados por prioridad/calidad descendente.
         """
         sources_found = []
         preferred_lang_upper = preferred_lang.upper()
 
         for s in servers:
             lang = (s.get("lang") or "DESCONOCIDO").upper()
-            provider = s.get("provider") or "desconocido"
+            provider = (s.get("provider") or "desconocido").lower()
             embed_url = s.get("url") or ""
 
             if not embed_url:
+                continue
+
+            # FILTRO ESTRICTO: Descartar servidor Vimeos (alta protección bot/iframe, no descargable)
+            if "vimeos" in embed_url.lower() or provider in ("vimeus", "vimeos"):
                 continue
 
             # Prioridad de idioma: preferido (300) > latino (200) > castellano (150) > sub (100)
@@ -523,7 +569,7 @@ class MovieDaysExtractor:
                     with urllib.request.urlopen(preq, timeout=10) as presp:
                         phtml = presp.read().decode("utf-8", errors="replace")
 
-                    # Método A: get_video_config.php (Donde viene Rumble .aaa.mp4)
+                    # Método A: get_video_config.php (Donde viene Rumble .aaa.mp4 / .mp4)
                     cfg_m = re.search(r'configId\s*=\s*["\']([a-f0-9]+)["\'];', phtml)
                     if cfg_m:
                         cid = cfg_m.group(1)
@@ -549,7 +595,8 @@ class MovieDaysExtractor:
                                         "quality": "1080p AAA",
                                         "lang": lang,
                                         "provider": provider,
-                                        "is_direct_mp4": True
+                                        "is_direct_mp4": True,
+                                        "referer": embed_url
                                     })
                                 elif "rumble" in f_url or f_url.endswith(".mp4"):
                                     score = 800 + lang_score + 50
@@ -560,7 +607,8 @@ class MovieDaysExtractor:
                                         "quality": "720p/HD",
                                         "lang": lang,
                                         "provider": provider,
-                                        "is_direct_mp4": True
+                                        "is_direct_mp4": True,
+                                        "referer": embed_url
                                     })
                                 elif ".m3u8" in f_url:
                                     score = 500 + lang_score
@@ -571,7 +619,8 @@ class MovieDaysExtractor:
                                         "quality": "HD (HLS)",
                                         "lang": lang,
                                         "provider": provider,
-                                        "is_direct_mp4": False
+                                        "is_direct_mp4": False,
+                                        "referer": embed_url
                                     })
 
                     # Método B: api/data.php (HLS proxy)
@@ -598,30 +647,34 @@ class MovieDaysExtractor:
                                         "quality": "HD (Stream)",
                                         "lang": lang,
                                         "provider": provider,
-                                        "is_direct_mp4": False
+                                        "is_direct_mp4": False,
+                                        "referer": embed_url
                                     })
                 except Exception:
                     pass
 
-            # Caso 2: Vimeos o proveedores externos HLS
-            elif "vimeos" in embed_url or ".m3u8" in embed_url:
+            # Caso 2: Proveedores externos HLS válidos (.m3u8)
+            elif ".m3u8" in embed_url:
                 score = 300 + lang_score
                 sources_found.append({
                     "score": score,
                     "url": embed_url,
-                    "type": "external_embed",
-                    "quality": "HD (Vimeos)",
+                    "type": "external_hls",
+                    "quality": "HD (HLS)",
                     "lang": lang,
                     "provider": provider,
-                    "is_direct_mp4": False
+                    "is_direct_mp4": False,
+                    "referer": embed_url
                 })
-
-        if not sources_found:
-            return None
 
         # Ordenar por puntaje descendente
         sources_found.sort(key=lambda x: x["score"], reverse=True)
-        return sources_found[0]
+        return sources_found
+
+    def resolve_best_source(self, servers: List[Dict[str, Any]], preferred_lang: str = "LATINO") -> Optional[Dict[str, Any]]:
+        """Retorna la mejor fuente individual si existe (compatibilidad)."""
+        candidates = self.resolve_candidate_sources(servers, preferred_lang=preferred_lang)
+        return candidates[0] if candidates else None
 
 # =====================================================================
 # DESCARGADOR ACELERADO DE ALTO RENDIMIENTO
@@ -712,6 +765,41 @@ class FastDownloader:
                     pass
             return False, 0, 0.0, 0
 
+    def check_url_alive(self, url: str) -> bool:
+        """
+        Verificación ultrarrápida (HTTP Range 0-10) para comprobar que el archivo directo
+        responde HTTP 200/206 antes de iniciar la descarga.
+        Detecta inmediatamente enlaces 404/403/410 caídos en Rumble Cloud.
+        """
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": self.ua,
+                "Range": "bytes=0-10"
+            })
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                return resp.status in (200, 206)
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404, 410, 500, 502, 503):
+                return False
+            return False
+        except Exception:
+            return False
+
+    def cleanup_file(self, output_path: str):
+        """Elimina de forma segura el archivo destino y su temporal .part si existen."""
+        for p in [output_path, f"{output_path}.part"]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+        parent = os.path.dirname(output_path)
+        try:
+            if os.path.exists(parent) and not os.listdir(parent):
+                os.rmdir(parent)
+        except Exception:
+            pass
+
     def download_hls(self, url: str, output_path: str, referer: Optional[str] = None) -> Tuple[bool, int, float, int]:
         """
         Descarga de streams HLS (.m3u8) usando yt-dlp con fragmentos concurrentes.
@@ -725,8 +813,8 @@ class FastDownloader:
             "--no-playlist",
             "--force-overwrites",
             "--user-agent", self.ua,
-            "--retries", "5",
-            "--fragment-retries", "5",
+            "--retries", "3",
+            "--fragment-retries", "3",
             "--concurrent-fragments", str(self.num_threads or 5),
             "--buffer-size", "16M",
             "--hls-use-mpegts",
@@ -737,13 +825,16 @@ class FastDownloader:
 
         try:
             p = subprocess.run(cmd, check=False)
-            if p.returncode == 0 and os.path.exists(output_path):
+            if p.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) >= 1024 * 1024:
                 size = os.path.getsize(output_path)
                 duration = int(time.time() - start_time)
                 speed = (size / max(1, duration)) / (1024 * 1024)
                 return True, size, speed, duration
+            else:
+                self.cleanup_file(output_path)
         except Exception as e:
             log_error(f"Error al ejecutar yt-dlp: {e}")
+            self.cleanup_file(output_path)
 
         return False, 0, 0.0, 0
 
@@ -757,6 +848,7 @@ class RcloneUploader:
         self.rclone_bin = self._find_rclone(self.cfg.get("rclone_path", "rclone"))
         self.timeout_seconds = max(60, self.cfg.get("upload_timeout_minutes", 15) * 60)
         self.cooldown_seconds = self.cfg.get("upload_cooldown_seconds", 3)
+        self.quota_exceeded = False
 
     def _find_rclone(self, preferred: str) -> str:
         candidates = [preferred, "rclone.exe", "rclone"]
@@ -797,8 +889,8 @@ class RcloneUploader:
     def upload_movie(self, local_path: str, remote_folder: str, max_retries: int = 3) -> bool:
         """
         Sube la película a Google Drive usando las flags optimizadas de Rclone,
-        con detección inteligente de Rate Limits, reintentos con backoff exponencial
-        y pausa de seguridad (cooldown) post-subida.
+        con detección inteligente de Rate Limits, reintentos con backoff exponencial,
+        pausa de seguridad (cooldown) y protección de almacenamiento local ante fallas.
         """
         if not os.path.exists(local_path):
             log_error(f"Archivo local no encontrado para subir: {local_path}")
@@ -845,7 +937,8 @@ class RcloneUploader:
                         time.sleep(wait_time)
                     elif "storageQuotaExceeded" in err_msg or "upload limit" in err_msg.lower():
                         log_error("🛑 Límite diario de subida de Google Drive alcanzado (750GB/día).")
-                        return False
+                        self.quota_exceeded = True
+                        break
                     else:
                         time.sleep(10)
 
@@ -857,6 +950,19 @@ class RcloneUploader:
             except Exception as e:
                 log_error(f"Excepción al ejecutar rclone: {e}")
                 time.sleep(10)
+
+        # Si falló la subida (por cuota de Drive o error), limpiar copia local si está habilitado
+        # para evitar saturar el disco del VPS (50 GB) con archivos huérfanos acumulados
+        if self.cfg.get("delete_on_failed_upload", True):
+            try:
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                    parent = os.path.dirname(local_path)
+                    if os.path.exists(parent) and not os.listdir(parent):
+                        os.rmdir(parent)
+                    log_warn(f"Copia local eliminada tras fallo de subida para liberar almacenamiento VPS: {local_path}")
+            except Exception as e:
+                log_warn(f"No se pudo limpiar copia local tras fallo de subida: {e}")
 
         return False
 
@@ -982,61 +1088,106 @@ class MovieEngine:
         servers = details.get("servers", [])
         log_info(f"🎬 Película: {Colors.BOLD}{title} ({year}){Colors.RESET} | Servidores disponibles: {len(servers)}")
 
-        # 4. Resolver mejor stream (Prioridad Rumble .aaa.mp4)
-        best_source = self.extractor.resolve_best_source(servers, preferred_lang=pref_lang)
-        if not best_source:
-            log_error(f"No se pudo extraer ningún enlace de video utilizable para: {title}")
+        # Verificar espacio en disco del VPS antes de comenzar descarga
+        download_dir = self.cfg.get("movie_download_dir", "./downloads_movies")
+        min_free_gb = float(self.cfg.get("min_free_disk_gb", 3.0))
+        free_gb = get_free_disk_space_gb(download_dir)
+        if free_gb < min_free_gb:
+            log_warn(f"⚠️ Espacio en disco bajo ({free_gb:.2f} GB libres). Ejecutando limpieza preventiva...")
+            cleanup_orphaned_downloads(download_dir)
+            free_gb = get_free_disk_space_gb(download_dir)
+            if free_gb < min_free_gb:
+                log_error(f"🛑 Espacio insuficiente en disco VPS ({free_gb:.2f} GB libres, mínimo requerido: {min_free_gb} GB). Pausando descarga para proteger el sistema.")
+                return False
+
+        # 4. Resolver fuentes candidatas (Prioridad Rumble .aaa.mp4, excluyendo Vimeos)
+        candidate_sources = self.extractor.resolve_candidate_sources(servers, preferred_lang=pref_lang)
+        if not candidate_sources:
+            log_error(f"No se pudo extraer ninguna fuente válida de video (servidor Vimeos omitido o sin fuentes) para: {title}")
             return False
 
-        source_url = best_source["url"]
-        source_type = best_source["type"]
-        lang = best_source["lang"]
-        quality = best_source["quality"]
-
-        is_aaa = ".aaa.mp4" in source_url
-        badge = f"{Colors.YELLOW}🌟 RUMBLE AAA{Colors.RESET}" if is_aaa else f"{Colors.CYAN}{source_type}{Colors.RESET}"
-        log_success(f"Fuente seleccionada: {badge} | Idioma: {Colors.BOLD}{lang}{Colors.RESET} | Calidad: {quality}")
+        log_info(f"Fuentes viables encontradas: {len(candidate_sources)} (Prioridad: {candidate_sources[0]['type']} - {candidate_sources[0]['quality']})")
 
         # 5. Definir nombres y rutas locales y remotas
-        download_dir = self.cfg.get("movie_download_dir", "./downloads_movies")
         movie_folder_name = f"{title} ({year})"
-        movie_file_name = f"{title} ({year}) [{quality.split()[0]}] [{lang[:3]}].mp4"
-        local_dir = os.path.join(download_dir, movie_folder_name)
-        local_file_path = os.path.join(local_dir, movie_file_name)
-
         remote_base = self.cfg.get("rclone_movie_remote", "gdrive:Movies")
         remote_folder = f"{remote_base}/{movie_folder_name}"
-        remote_dest_path = f"{remote_folder}/{movie_file_name}"
+        local_dir = os.path.join(download_dir, movie_folder_name)
 
-        # Registrar en BD
+        # 6. Intentar descarga iterando fuentes candidatas (Fallback multi-servidor)
+        download_ok = False
+        selected_source = None
+        local_file_path = None
+        size_bytes = 0
+        speed_mbps = 0.0
+        duration = 0
+
+        for idx, candidate in enumerate(candidate_sources, 1):
+            s_url = candidate["url"]
+            s_type = candidate["type"]
+            s_lang = candidate["lang"]
+            s_qual = candidate["quality"]
+            is_direct = candidate["is_direct_mp4"]
+
+            movie_file_name = f"{title} ({year}) [{s_qual.split()[0]}] [{s_lang[:3]}].mp4"
+            local_file_path = os.path.join(local_dir, movie_file_name)
+
+            badge = f"{Colors.YELLOW}🌟 RUMBLE AAA{Colors.RESET}" if ".aaa.mp4" in s_url else f"{Colors.CYAN}{s_type}{Colors.RESET}"
+            log_step(f"Probando fuente {idx}/{len(candidate_sources)}: {badge} | Idioma: {s_lang} | Calidad: {s_qual}")
+
+            # Pre-chequeo ultrarrápido para enlaces directos MP4
+            if is_direct:
+                if not self.downloader.check_url_alive(s_url):
+                    log_warn(f"Enlace directo no responde (404/403/timeout): {s_url[:65]}... Probando siguiente alternativa.")
+                    continue
+
+            log_info(f"Descargando a: {local_file_path}")
+            if is_direct:
+                ok, size_bytes, speed_mbps, duration = self.downloader.download_direct_mp4(s_url, local_file_path)
+            else:
+                ok, size_bytes, speed_mbps, duration = self.downloader.download_hls(s_url, local_file_path, referer=candidate.get("referer"))
+
+            if ok and os.path.exists(local_file_path) and os.path.getsize(local_file_path) >= 1024 * 1024:
+                download_ok = True
+                selected_source = candidate
+                break
+            else:
+                log_warn(f"Fuente {idx} ({s_type}) falló en descarga completa. Limpiando y probando alternativa...")
+                self.downloader.cleanup_file(local_file_path)
+
+        if not download_ok or not selected_source or not local_file_path:
+            err_msg = f"Todas las fuentes disponibles ({len(candidate_sources)}) fallaron en descarga"
+            log_error(err_msg)
+            dummy_path = os.path.join(local_dir, f"{title} ({year}).mp4")
+            mid = self.db.record_movie(
+                tmdb_id=tmdb_id,
+                title=title,
+                year=year,
+                lang=candidate_sources[0]["lang"],
+                quality=candidate_sources[0]["quality"],
+                source_type=candidate_sources[0]["type"],
+                source_url=candidate_sources[0]["url"],
+                local_path=dummy_path
+            )
+            self.db.mark_failed(mid, err_msg)
+            return False
+
+        # Registrar descarga exitosa en BD
+        log_success(f"Descarga finalizada: {format_bytes(size_bytes)} en {format_seconds(duration)} ({speed_mbps:.1f} MB/s)")
         movie_record_id = self.db.record_movie(
             tmdb_id=tmdb_id,
             title=title,
             year=year,
-            lang=lang,
-            quality=quality,
-            source_type=source_type,
-            source_url=source_url,
+            lang=selected_source["lang"],
+            quality=selected_source["quality"],
+            source_type=selected_source["type"],
+            source_url=selected_source["url"],
             local_path=local_file_path
         )
-
-        # 6. Descarga
-        log_step(f"Iniciando descarga a: {Colors.CYAN}{local_file_path}{Colors.RESET}")
-        if best_source["is_direct_mp4"]:
-            ok, size_bytes, speed_mbps, duration = self.downloader.download_direct_mp4(source_url, local_file_path)
-        else:
-            ok, size_bytes, speed_mbps, duration = self.downloader.download_hls(source_url, local_file_path)
-
-        if not ok or not os.path.exists(local_file_path) or os.path.getsize(local_file_path) < 1024 * 1024:
-            err_msg = "Descarga incompleta o fallida"
-            log_error(err_msg)
-            self.db.mark_failed(movie_record_id, err_msg)
-            return False
-
-        log_success(f"Descarga finalizada: {format_bytes(size_bytes)} en {format_seconds(duration)} ({speed_mbps:.1f} MB/s)")
         self.db.mark_downloaded(movie_record_id, size_bytes, speed_mbps, duration)
 
         # 7. Subida a Google Drive con Rclone
+        remote_dest_path = f"{remote_folder}/{os.path.basename(local_file_path)}"
         if self.cfg.get("rclone_enabled", True) and self.uploader.is_available():
             upload_ok = self.uploader.upload_movie(local_file_path, remote_folder)
             if upload_ok:
@@ -1060,6 +1211,10 @@ class MovieEngine:
             with open(q_file, "w", encoding="utf-8") as f:
                 f.write("# Pega aquí enlaces de Cinebel o nombres de películas para descargar\n")
 
+        # Limpieza preventiva inicial de archivos huérfanos
+        download_dir = self.cfg.get("movie_download_dir", "./downloads_movies")
+        cleanup_orphaned_downloads(download_dir)
+
         log_info(f"👀 Monitoreando cola de películas: {Colors.CYAN}{q_file}{Colors.RESET}")
         log_info("Puedes agregar nuevos enlaces o títulos al archivo en cualquier momento. (Ctrl+C para salir)")
 
@@ -1072,6 +1227,12 @@ class MovieEngine:
 
         try:
             while True:
+                # Si se detectó cuota excedida de Google Drive, pausar para no acumular descargas
+                if self.uploader.quota_exceeded:
+                    log_warn("🛑 Límite de subida de Google Drive activo (750GB/día). Pausando procesamiento de cola por 30 minutos...")
+                    time.sleep(1800)
+                    self.uploader.quota_exceeded = False
+
                 # Leer primera entrada pendiente
                 lines = []
                 with open(q_file, "r", encoding="utf-8") as f:
