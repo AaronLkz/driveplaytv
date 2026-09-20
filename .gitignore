@@ -3,3 +3,5 @@
 *.bak
 scan_results.json
 *.db.bak
+rclone.exe
+raveomega_movies.json

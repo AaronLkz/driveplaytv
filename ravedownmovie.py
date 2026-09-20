@@ -280,6 +280,21 @@ class MovieDatabase:
                 )
             return cur.fetchone() is not None
 
+    def is_movie_completed_by_title(self, title: str, year: Optional[str] = None) -> bool:
+        with self._get_connection() as conn:
+            clean_t = title.strip().lower()
+            if year:
+                cur = conn.execute(
+                    "SELECT id FROM movies WHERE LOWER(title) = ? AND year = ? AND status = 'completed'",
+                    (clean_t, str(year).strip())
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT id FROM movies WHERE LOWER(title) = ? AND status = 'completed'",
+                    (clean_t,)
+                )
+            return cur.fetchone() is not None
+
     def record_movie(self, tmdb_id: int, title: str, year: str, lang: str,
                      quality: str, source_type: str, source_url: str, local_path: str) -> int:
         with self._get_connection() as conn:
@@ -1019,6 +1034,118 @@ class CinebelSitemapImporter:
         return added
 
 # =====================================================================
+# EXTRACTOR DE RAVEOMEGA (raveomega.com - Direct MP4 & Rumble CDN)
+# =====================================================================
+
+class RaveOmegaExtractor:
+    def __init__(self, user_agent: str = USER_AGENT):
+        self.ua = user_agent
+        self.base_url = "https://raveomega.com"
+
+    def fetch_catalog(self) -> List[Dict[str, Any]]:
+        url = f"{self.base_url}/api.php?action=catalog"
+        req = urllib.request.Request(url, headers={"User-Agent": self.ua})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if isinstance(data, list):
+                    return [item for item in data if item.get("tipo") == "pelicula"]
+        except Exception as e:
+            log_error(f"Error al leer catálogo de RaveOmega: {e}")
+        return []
+
+    def get_movie_detail(self, item_id: int) -> Optional[Dict[str, Any]]:
+        url = f"{self.base_url}/api.php?action=detail&tipo=pelicula&id={item_id}"
+        req = urllib.request.Request(url, headers={"User-Agent": self.ua})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("ok"):
+                    return data
+        except Exception as e:
+            log_warn(f"Error al obtener detalle de RaveOmega (ID {item_id}): {e}")
+        return None
+
+    def get_movie_video(self, item_id: int) -> Optional[Dict[str, Any]]:
+        url = f"{self.base_url}/resena.php?tipo=pelicula&id={item_id}"
+        req = urllib.request.Request(url, headers={"User-Agent": self.ua})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+
+            m_video = re.search(r'data-video=[\"\']([^\"\']+)[\"\']', html)
+            video_url = m_video.group(1) if m_video else ""
+            if not video_url:
+                m_src = re.search(r'<video[^>]+src=[\"\']([^\"\']+)[\"\']', html)
+                video_url = m_src.group(1) if m_src else ""
+
+            if not video_url:
+                return None
+
+            # Resolver stream.php a enlace directo media.raveomega.com
+            if "stream.php?file=" in video_url:
+                filename = video_url.split("stream.php?file=")[-1]
+                video_url = f"https://media.raveomega.com/{filename}"
+
+            is_direct = video_url.endswith(".mp4") or "rumble" in video_url or "1a-1791" in video_url
+            source_type = "media_raveomega" if "media.raveomega.com" in video_url else ("rumble_aaa" if ".aaa.mp4" in video_url else "direct_mp4")
+
+            return {
+                "url": video_url,
+                "type": source_type,
+                "quality": "1080p Dual/HD",
+                "lang": "LATINO",
+                "is_direct_mp4": is_direct,
+                "referer": url
+            }
+        except Exception as e:
+            log_warn(f"Error al extraer video de RaveOmega (ID {item_id}): {e}")
+        return None
+
+    def import_to_queue(self, queue_file: str, limit: int = 100, db: Optional[MovieDatabase] = None) -> int:
+        log_info("Consultando catálogo de RaveOmega...")
+        items = self.fetch_catalog()
+        if not items:
+            return 0
+
+        existing_lines = set()
+        if os.path.exists(queue_file):
+            with open(queue_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    c = line.strip()
+                    if c and not c.startswith("#"):
+                        existing_lines.add(c)
+
+        added = 0
+        to_add = []
+        for it in items:
+            item_id = it.get("id")
+            title = it.get("titulo") or "Pelicula"
+            title_clean = re.sub(r'(?i)[-\s]*rave\s*omega(?:\.com)?', '', title).strip(' -:')
+            year = str(it.get("año") or it.get("anio") or "")
+            entry_line = f"raveomega:{item_id} # {title_clean} ({year})"
+
+            if entry_line in existing_lines or f"raveomega:{item_id}" in existing_lines:
+                continue
+
+            if db and (db.is_movie_completed_by_title(title_clean, year) or db.is_movie_completed_by_title(title, year)):
+                continue
+
+            to_add.append(entry_line)
+            existing_lines.add(entry_line)
+            added += 1
+            if added >= limit:
+                break
+
+        if to_add:
+            with open(queue_file, "a", encoding="utf-8") as f:
+                f.write(f"\n# --- Importado desde RaveOmega ({datetime.now().strftime('%Y-%m-%d %H:%M')}) ---\n")
+                for u in to_add:
+                    f.write(f"{u}\n")
+
+        return added
+
+# =====================================================================
 # NÚCLEO DE PROCESAMIENTO Y COLA
 # =====================================================================
 
@@ -1027,6 +1154,7 @@ class MovieEngine:
         self.cfg = config_manager
         self.db = MovieDatabase(DB_FILE)
         self.extractor = MovieDaysExtractor(USER_AGENT)
+        self.raveomega = RaveOmegaExtractor(USER_AGENT)
         self.downloader = FastDownloader(
             user_agent=USER_AGENT,
             ytdlp_path=self.cfg.get("ytdlp_path", "yt-dlp"),
@@ -1034,11 +1162,147 @@ class MovieEngine:
         )
         self.uploader = RcloneUploader(self.cfg)
 
+    def process_raveomega_entry(self, entry: str) -> bool:
+        """
+        Procesa una película originada en RaveOmega (Direct MP4 / Rumble AAA).
+        """
+        clean = entry.strip()
+        if "#" in clean:
+            clean = clean.split("#")[0].strip()
+
+        item_id = None
+        if clean.lower().startswith("raveomega:"):
+            part = clean.split(":")[-1].strip()
+            if part.isdigit():
+                item_id = int(part)
+        elif "id=" in clean:
+            m = re.search(r'id=(\d+)', clean)
+            if m:
+                item_id = int(m.group(1))
+
+        if not item_id:
+            log_error(f"Entrada de RaveOmega inválida: {entry}")
+            return False
+
+        log_step(f"Procesando entrada RaveOmega ID: {Colors.YELLOW}{item_id}{Colors.RESET}")
+
+        # 1. Obtener detalles
+        detail = self.raveomega.get_movie_detail(item_id) or {}
+        raw_title = detail.get("titulo") or f"Pelicula_Rave_{item_id}"
+        raw_title = re.sub(r'(?i)[-\s]*rave\s*omega(?:\.com)?', '', raw_title).strip(' -:')
+        raw_year = str(detail.get("año") or detail.get("anio") or "")
+
+        # 2. Obtener enlace de video
+        source_data = self.raveomega.get_movie_video(item_id)
+        if not source_data or not source_data.get("url"):
+            log_error(f"No se pudo obtener enlace de video directo en RaveOmega para ID {item_id}")
+            return False
+
+        source_url = source_data["url"]
+        source_type = source_data["type"]
+        quality = source_data["quality"]
+        lang = source_data["lang"]
+
+        # 3. Resolver metadatos oficiales en TMDB
+        tmdb_id = 9000000 + item_id
+        title = sanitize_filename(raw_title)
+        year = raw_year
+
+        results = self.extractor.search_movie(raw_title)
+        if results:
+            best = self.extractor.find_best_match(raw_title, results)
+            if best:
+                tmdb_id = best.get("id")
+                lat_title, lat_year = self.extractor.get_latino_title(tmdb_id, raw_title)
+                if lat_title:
+                    title = sanitize_filename(lat_title)
+                if lat_year:
+                    year = lat_year
+
+        if not year:
+            year = "2024"
+
+        # 4. Verificar si ya fue completada previamente en la BD (por TMDB ID o por Título)
+        if self.db.is_movie_completed(tmdb_id) or self.db.is_movie_completed_by_title(title, year) or self.db.is_movie_completed_by_title(raw_title, raw_year):
+            log_success(f"La película '{title}' ({year}) [TMDB {tmdb_id}] ya fue descargada y subida anteriormente. Omitiendo.")
+            return True
+
+        badge = f"{Colors.YELLOW}🌟 {source_type.upper()}{Colors.RESET}"
+        log_info(f"🎬 Película: {Colors.BOLD}{title} ({year}){Colors.RESET} | Fuente: {badge}")
+
+        # 5. Pre-chequeo de disponibilidad del enlace
+        if not self.downloader.check_url_alive(source_url):
+            log_warn(f"Enlace no responde o caído (HTTP 404/403): {source_url[:65]}...")
+            return False
+
+        # 6. Definir rutas locales y remotas
+        download_dir = self.cfg.get("movie_download_dir", "./downloads_movies")
+        min_free_gb = float(self.cfg.get("min_free_disk_gb", 3.0))
+        free_gb = get_free_disk_space_gb(download_dir)
+        if free_gb < min_free_gb:
+            log_warn(f"Espacio en disco bajo ({free_gb:.2f} GB). Limpiando huérfanos...")
+            cleanup_orphaned_downloads(download_dir)
+
+        movie_folder_name = f"{title} ({year})"
+        movie_file_name = f"{title} ({year}) [{quality.split()[0]}] [{lang[:3]}].mp4"
+        local_dir = os.path.join(download_dir, movie_folder_name)
+        local_file_path = os.path.join(local_dir, movie_file_name)
+
+        remote_base = self.cfg.get("rclone_movie_remote", "gdrive:Movies")
+        remote_folder = f"{remote_base}/{movie_folder_name}"
+        remote_dest_path = f"{remote_folder}/{movie_file_name}"
+
+        # 7. Descarga acelerada
+        log_step(f"Iniciando descarga directa de RaveOmega a: {Colors.CYAN}{local_file_path}{Colors.RESET}")
+        ok, size_bytes, speed_mbps, duration = self.downloader.download_direct_mp4(source_url, local_file_path)
+
+        if not ok or not os.path.exists(local_file_path) or os.path.getsize(local_file_path) < 1024 * 1024:
+            err_msg = "Descarga de RaveOmega incompleta o fallida"
+            log_error(err_msg)
+            self.downloader.cleanup_file(local_file_path)
+            return False
+
+        log_success(f"Descarga finalizada: {format_bytes(size_bytes)} en {format_seconds(duration)} ({speed_mbps:.1f} MB/s)")
+        movie_record_id = self.db.record_movie(
+            tmdb_id=tmdb_id,
+            title=title,
+            year=year,
+            lang=lang,
+            quality=quality,
+            source_type=source_type,
+            source_url=source_url,
+            local_path=local_file_path
+        )
+        self.db.mark_downloaded(movie_record_id, size_bytes, speed_mbps, duration)
+
+        # 8. Subida a Google Drive con Rclone
+        if self.cfg.get("rclone_enabled", True) and self.uploader.is_available():
+            upload_ok = self.uploader.upload_movie(local_file_path, remote_folder)
+            if upload_ok:
+                self.db.mark_completed(movie_record_id, remote_dest_path)
+                log_success(f"🎉 ¡Película '{title}' completada y almacenada en Google Drive!")
+                return True
+            else:
+                self.db.mark_failed(movie_record_id, "Error al subir archivo con rclone")
+                return False
+        else:
+            log_info("Rclone desactivado o no disponible. La película se mantiene en almacenamiento local.")
+            self.db.mark_completed(movie_record_id, local_file_path)
+            return True
+
     def process_movie_entry(self, entry: str) -> bool:
         """
-        Procesa una entrada individual (URL de cinebel, TMDB o búsqueda),
+        Procesa una entrada individual (URL de cinebel, TMDB, RaveOmega o búsqueda),
         extrae la fuente óptima, descarga a máxima velocidad y sube a Drive.
         """
+        clean_entry = entry.strip()
+        if "#" in clean_entry:
+            clean_entry = clean_entry.split("#")[0].strip()
+
+        # Caso RaveOmega
+        if clean_entry.lower().startswith("raveomega:") or "raveomega.com" in clean_entry.lower():
+            return self.process_raveomega_entry(clean_entry)
+
         log_step(f"Procesando entrada: {Colors.YELLOW}{entry}{Colors.RESET}")
 
         # 1. Resolver TMDB ID
@@ -1305,12 +1569,13 @@ def interactive_menu(engine: MovieEngine):
         print("1) 📥 Iniciar procesador de cola continua (queuemovie.txt)")
         print("2) 🎯 Descargar una película individual (URL, TMDB o búsqueda)")
         print("3) 📦 Importar lote de películas desde el Sitemap de Cinebel a la cola")
-        print("4) 📋 Ver historial de películas descargadas")
-        print("5) ⚙️  Configuración rápida (Idioma preferido, Destino en Google Drive)")
-        print("6) 🚪 Salir")
+        print("4) 🌟 Importar lote desde RaveOmega (Direct MP4 / Rumble AAA) a la cola")
+        print("5) 📋 Ver historial de películas descargadas")
+        print("6) ⚙️  Configuración rápida (Idioma preferido, Destino en Google Drive)")
+        print("7) 🚪 Salir")
         print("-" * 65)
 
-        choice = input("Selecciona una opción [1-6]: ").strip()
+        choice = input("Selecciona una opción [1-7]: ").strip()
 
         if choice == "1":
             q_file = engine.cfg.get("movie_queue_file", DEFAULT_QUEUE_FILE)
@@ -1319,6 +1584,8 @@ def interactive_menu(engine: MovieEngine):
         elif choice == "2":
             print("\nFormatos soportados:")
             print(" - https://cinebel.cc/movies/super-mario-bros-la-pelicula/")
+            print(" - https://raveomega.com/resena.php?tipo=pelicula&id=1093")
+            print(" - raveomega:1093")
             print(" - https://www.themoviedb.org/movie/502356")
             print(" - 502356 (ID de TMDB)")
             print(" - Super Mario Bros (Título de la película)")
@@ -1342,6 +1609,17 @@ def interactive_menu(engine: MovieEngine):
             input("\nPresiona Enter para volver al menú...")
 
         elif choice == "4":
+            limit_input = input("¿Cuántas películas de RaveOmega agregar a la cola? [100]: ").strip() or "100"
+            try:
+                limit = int(limit_input)
+                q_file = engine.cfg.get("movie_queue_file", DEFAULT_QUEUE_FILE)
+                added = engine.raveomega.import_to_queue(q_file, limit=limit, db=engine.db)
+                log_success(f"Se agregaron {added} películas de RaveOmega a {q_file} con éxito.")
+            except Exception as e:
+                log_error(f"Error en importación: {e}")
+            input("\nPresiona Enter para volver al menú...")
+
+        elif choice == "5":
             print("\n" + "=" * 65)
             print(f"{Colors.BOLD}📋 ÚLTIMAS PELÍCULAS PROCESADAS{Colors.RESET}")
             print("=" * 65)
@@ -1359,7 +1637,7 @@ def interactive_menu(engine: MovieEngine):
                         print(f"    Error: {Colors.RED}{r['error_message']}{Colors.RESET}")
             input("\nPresiona Enter para volver al menú...")
 
-        elif choice == "5":
+        elif choice == "6":
             print("\n" + "=" * 65)
             print(f"{Colors.BOLD}⚙️  CONFIGURACIÓN RÁPIDA{Colors.RESET}")
             print("=" * 65)
@@ -1386,15 +1664,16 @@ def interactive_menu(engine: MovieEngine):
                 engine.cfg.set("delete_after_upload", not cur_del)
                 log_success(f"Borrado tras subir cambiado a: {not cur_del}")
 
-        elif choice == "6":
+        elif choice == "7":
             print("\n¡Hasta luego!")
             break
 
 def main():
     parser = argparse.ArgumentParser(description="Ravedown Movie 1.0 - Descargador de Películas a Máxima Velocidad")
-    parser.add_argument("--url", "-u", help="URL de Cinebel, TMDB ID o título de película para procesar directamente")
+    parser.add_argument("--url", "-u", help="URL de Cinebel, RaveOmega, TMDB ID o título de película para procesar directamente")
     parser.add_argument("--queue", "-q", "--daemon", "-d", dest="queue", action="store_true", help="Iniciar monitor continuo de cola (queuemovie.txt)")
     parser.add_argument("--import-sitemap", type=int, nargs="?", const=1, help="Importar películas del sitemap de Cinebel a la cola (opcional: número de página)")
+    parser.add_argument("--import-raveomega", type=int, nargs="?", const=100, help="Importar películas de RaveOmega (Direct MP4 / Rumble) a la cola (opcional: límite)")
     parser.add_argument("--limit", type=int, default=50, help="Límite de películas a importar del sitemap (por defecto 50)")
     parser.add_argument("--stats", action="store_true", help="Mostrar estadísticas de ravedownmovie.db")
 
@@ -1412,6 +1691,12 @@ def main():
         q_file = config_mgr.get("movie_queue_file", DEFAULT_QUEUE_FILE)
         added = importer.import_to_queue(q_file, page=args.import_sitemap, limit=args.limit, db=engine.db)
         log_success(f"Se agregaron {added} películas a {q_file}")
+        return
+
+    if args.import_raveomega:
+        q_file = config_mgr.get("movie_queue_file", DEFAULT_QUEUE_FILE)
+        added = engine.raveomega.import_to_queue(q_file, limit=args.import_raveomega, db=engine.db)
+        log_success(f"Se agregaron {added} películas de RaveOmega a {q_file}")
         return
 
     if args.url:
